@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>Проверка пропусков</title>
+    <link rel="manifest" href="/staff/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon-staff.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/icon-staff-192.png" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/staff/staff.css" />
+  </head>
+  <body>
+    <div id="offline-banner" class="banner" hidden>Офлайн — проверка по подписи, отправка на сервер отложена</div>
+
+    <main id="view-auth" class="view auth" hidden>
+      <div class="card auth-card">
+        <h1 class="brand">Проверка пропусков</h1>
+        <p class="muted">Вход для сотрудников</p>
+        <form id="form-login" class="form" novalidate>
+          <label class="field">
+            <span>Email</span>
+            <input name="email" type="email" autocomplete="username" required />
+          </label>
+          <label class="field">
+            <span>Пароль</span>
+            <input name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <p class="form-error" data-error hidden></p>
+          <button class="btn btn-primary" type="submit">Войти</button>
+        </form>
+        <p class="muted small">Владельцам пропусков — <a href="/">личный кабинет</a></p>
+      </div>
+    </main>
+
+    <main id="view-scanner" class="view scanner" hidden>
+      <header class="topbar">
+        <div>
+          <p class="muted small">Сотрудник</p>
+          <h2 id="staff-name">—</h2>
+        </div>
+        <button class="btn btn-ghost" id="btn-logout" type="button">Выйти</button>
+      </header>
+
+      <section class="card">
+        <label class="field">
+          <span>Точка прохода</span>
+          <input id="gate-input" type="text" placeholder="Например: Главный вход" />
+        </label>
+        <div class="row">
+          <button class="btn btn-primary" id="btn-camera" type="button">Включить камеру</button>
+          <button class="btn btn-ghost" id="btn-manual" type="button">Ввести код</button>
+          <span class="pill" id="queue-pill" hidden>В очереди: <b id="queue-count">0</b></span>
+        </div>
+        <p class="muted small" id="scanner-note"></p>
+      </section>
+
+      <section class="card camera-card" id="camera-card" hidden>
+        <div class="video-wrap">
+          <video id="video" playsinline muted></video>
+          <div class="reticle" aria-hidden="true"></div>
+        </div>
+        <button class="btn btn-ghost" id="btn-stop-camera" type="button">Остановить камеру</button>
+      </section>
+
+      <section class="card" id="manual-card" hidden>
+        <form id="form-manual" class="form">
+          <label class="field">
+            <span>Код пропуска</span>
+            <input id="manual-token" name="token" type="text" autocomplete="off" spellcheck="false" />
+          </label>
+          <button class="btn btn-primary" type="submit">Проверить</button>
+        </form>
+      </section>
+
+      <section class="result" id="result" hidden>
+        <p class="result-title" id="result-title">—</p>
+        <p class="result-name" id="result-name"></p>
+        <p class="result-meta" id="result-meta"></p>
+      </section>
+
+      <section class="card">
+        <div class="row space-between">
+          <h3>Последние проверки</h3>
+          <button class="btn btn-ghost small" id="btn-reload-scans" type="button">Обновить</button>
+        </div>
+        <ul class="scan-list" id="scan-list">
+          <li class="muted">Пока пусто</li>
+        </ul>
+      </section>
+    </main>
+
+    <script type="module" src="/staff/staff.js"></script>
+  </body>
+</html>
