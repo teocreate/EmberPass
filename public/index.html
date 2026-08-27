@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1020" />
+    <title>Пропуск — личный кабинет</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="offline-banner" class="banner" hidden>Нет сети — показан последний код</div>
+
+    <main id="view-auth" class="view auth" hidden>
+      <div class="card auth-card">
+        <h1 class="brand">Пропуск</h1>
+        <p class="muted">Личный кабинет и динамический пропуск</p>
+
+        <div class="tabs" role="tablist">
+          <button class="tab is-active" data-tab="login" role="tab" type="button">Вход</button>
+          <button class="tab" data-tab="register" role="tab" type="button">Регистрация</button>
+        </div>
+
+        <form id="form-login" class="form" novalidate>
+          <label class="field">
+            <span>Email</span>
+            <input name="email" type="email" autocomplete="username" required />
+          </label>
+          <label class="field">
+            <span>Пароль</span>
+            <input name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <p class="form-error" data-error hidden></p>
+          <button class="btn btn-primary" type="submit">Войти</button>
+        </form>
+
+        <form id="form-register" class="form" novalidate hidden>
+          <label class="field">
+            <span>Имя и фамилия</span>
+            <input name="fullName" type="text" autocomplete="name" required />
+          </label>
+          <label class="field">
+            <span>Email</span>
+            <input name="email" type="email" autocomplete="username" required />
+            <small class="hint" data-email-hint></small>
+          </label>
+          <label class="field">
+            <span>Пароль <small class="muted">(минимум 10 символов)</small></span>
+            <input name="password" type="password" autocomplete="new-password" minlength="10" required />
+          </label>
+          <p class="form-error" data-error hidden></p>
+          <button class="btn btn-primary" type="submit">Создать аккаунт</button>
+        </form>
+
+        <p class="muted small">
+          Сотрудникам — <a href="/staff/">приложение проверки</a>
+        </p>
+      </div>
+    </main>
+
+    <main id="view-cabinet" class="view cabinet" hidden>
+      <header class="topbar">
+        <div>
+          <p class="muted small" id="holder-role">Личный кабинет</p>
+          <h2 id="holder-name">—</h2>
+        </div>
+        <button class="btn btn-ghost" id="btn-logout" type="button">Выйти</button>
+      </header>
+
+      <section class="card pass-card">
+        <div class="pass-head">
+          <div>
+            <p class="muted small">Пропуск</p>
+            <p class="serial" id="pass-serial">—</p>
+          </div>
+          <span class="badge" id="pass-status">—</span>
+        </div>
+
+        <div class="barcode-wrap">
+          <div class="barcode" id="barcode" aria-live="polite" aria-label="Код пропуска"></div>
+          <div class="barcode-overlay" id="barcode-overlay" hidden>
+            <p id="barcode-overlay-text">Обновляем код…</p>
+            <button class="btn btn-primary" id="btn-retry" type="button" hidden>Повторить</button>
+          </div>
+        </div>
+
+        <div class="pass-meta">
+          <div class="countdown">
+            <svg viewBox="0 0 36 36" class="ring" aria-hidden="true">
+              <circle class="ring-bg" cx="18" cy="18" r="16" />
+              <circle class="ring-fg" id="ring-progress" cx="18" cy="18" r="16" />
+            </svg>
+            <span id="countdown-value">—</span>
+          </div>
+          <div class="pass-meta-text">
+            <p id="token-status">Код обновляется автоматически</p>
+            <p class="muted small" id="token-hint">Покажите код сотруднику на входе</p>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="switch" role="group" aria-label="Тип кода">
+            <button class="switch-btn is-active" data-format="qr" type="button">QR</button>
+            <button class="switch-btn" data-format="pdf417" type="button">PDF417</button>
+          </div>
+          <button class="btn btn-ghost" id="btn-refresh" type="button">Обновить</button>
+          <button class="btn btn-ghost" id="btn-bright" type="button">Ярче</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>История проходов</h3>
+        <ul class="scan-list" id="scan-list">
+          <li class="muted">Пока нет ни одного прохода</li>
+        </ul>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

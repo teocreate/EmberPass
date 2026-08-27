@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="Сканер пропусков">
+  <rect width="192" height="192" rx="42" fill="#0b1020"/>
+  <g fill="#5ad19b">
+    <rect x="36" y="36" width="44" height="44" rx="8"/>
+    <rect x="112" y="36" width="44" height="44" rx="8"/>
+    <rect x="36" y="112" width="44" height="44" rx="8"/>
+  </g>
+  <g fill="#0b1020">
+    <rect x="50" y="50" width="16" height="16" rx="3"/>
+    <rect x="126" y="50" width="16" height="16" rx="3"/>
+    <rect x="50" y="126" width="16" height="16" rx="3"/>
+  </g>
+  <g fill="#eef1ff">
+    <rect x="112" y="112" width="12" height="12"/>
+    <rect x="132" y="112" width="12" height="12"/>
+    <rect x="152" y="112" width="4" height="12"/>
+    <rect x="112" y="132" width="12" height="12"/>
+    <rect x="132" y="132" width="24" height="12"/>
+    <rect x="112" y="152" width="44" height="4"/>
+  </g>
+</svg>
