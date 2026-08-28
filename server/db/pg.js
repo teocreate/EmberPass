@@ -21,6 +21,8 @@ export async function createPostgresStore(databaseUrl) {
       fullName: row.full_name,
       role: row.role,
       status: row.status,
+      authSource: row.auth_source,
+      oidcSub: row.oidc_sub,
       createdAt: row.created_at,
       lastLoginAt: row.last_login_at,
     };
@@ -60,12 +62,31 @@ export async function createPostgresStore(databaseUrl) {
       await pool.end();
     },
 
-    async createUser({ email, passwordHash, fullName, role = 'user' }) {
+    async createUser({ email, passwordHash = null, fullName, role = 'user', authSource = 'local', oidcSub = null }) {
       return mapUser(
         await one(
-          `INSERT INTO users (email, password_hash, full_name, role)
-           VALUES ($1, $2, $3, $4) RETURNING *`,
-          [email, passwordHash, fullName, role],
+          `INSERT INTO users (email, password_hash, full_name, role, auth_source, oidc_sub)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+          [email, passwordHash, fullName, role, authSource, oidcSub],
+        ),
+      );
+    },
+
+    async findUserByOidcSub(sub) {
+      return mapUser(await one('SELECT * FROM users WHERE oidc_sub = $1', [sub]));
+    },
+
+    /** Links a local account to a provider subject, or refreshes name and role from it. */
+    async updateUserFromProvider(userId, { oidcSub, fullName, role, authSource }) {
+      return mapUser(
+        await one(
+          `UPDATE users SET
+             oidc_sub    = COALESCE($2, oidc_sub),
+             full_name   = COALESCE($3, full_name),
+             role        = COALESCE($4, role),
+             auth_source = COALESCE($5, auth_source)
+           WHERE id = $1 RETURNING *`,
+          [userId, oidcSub ?? null, fullName ?? null, role ?? null, authSource ?? null],
         ),
       );
     },
@@ -104,21 +125,21 @@ export async function createPostgresStore(databaseUrl) {
       return mapPass(await one('UPDATE passes SET status = $2 WHERE id = $1 RETURNING *', [passId, status]));
     },
 
-    async createSession({ tokenHash, userId, expiresAt, userAgent, ip }) {
+    async createSession({ tokenHash, userId, expiresAt, userAgent, ip, idToken = null }) {
       await pool.query(
-        `INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, ip)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [tokenHash, userId, expiresAt, userAgent, ip],
+        `INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, ip, id_token)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [tokenHash, userId, expiresAt, userAgent, ip, idToken],
       );
     },
 
     async findSession(tokenHash) {
       const row = await one(
-        `SELECT s.token_hash, s.user_id, s.expires_at FROM sessions s
+        `SELECT s.token_hash, s.user_id, s.expires_at, s.id_token FROM sessions s
          WHERE s.token_hash = $1 AND s.expires_at > now()`,
         [tokenHash],
       );
-      return row && { userId: row.user_id, expiresAt: row.expires_at };
+      return row && { userId: row.user_id, expiresAt: row.expires_at, idToken: row.id_token };
     },
 
     async deleteSession(tokenHash) {

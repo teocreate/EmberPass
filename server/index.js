@@ -14,6 +14,7 @@ import {
   handleGetPass, handleIssueToken, handleHistory, handlePublicKey,
 } from './routes/pass.js';
 import { handleVerify, handleRecentScans } from './routes/staff.js';
+import { handleOidcStart, handleOidcCallback } from './routes/oidc.js';
 
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), '../public');
 
@@ -23,6 +24,8 @@ const ROUTES = [
   ['POST', '/api/auth/logout', handleLogout],
   ['POST', '/api/auth/check-email', handleCheckEmail],
   ['GET', '/api/auth/me', handleMe],
+  ['GET', '/api/auth/oidc/start', handleOidcStart],
+  ['GET', '/api/auth/oidc/callback', handleOidcCallback],
   ['GET', '/api/pass', handleGetPass],
   ['POST', '/api/pass/token', handleIssueToken],
   ['GET', '/api/pass/history', handleHistory],

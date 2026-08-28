@@ -1,5 +1,5 @@
 /* Service worker for the staff app: cache the shell, never cache the API. */
-const CACHE = 'staff-shell-v1';
+const CACHE = 'staff-shell-v2';
 const SHELL = [
   '/staff/',
   '/staff/index.html',
@@ -8,6 +8,7 @@ const SHELL = [
   '/staff/staff.js',
   '/lib/api.js',
   '/staff/lib/passtoken.js',
+  '/lib/sso.js',
   '/staff/manifest.webmanifest',
   '/icons/icon-staff.svg',
 ];

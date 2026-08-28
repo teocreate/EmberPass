@@ -1,0 +1,62 @@
+# Local single sign-on stack: VoidAuth plus the database this app uses.
+# The app itself is run with `npm start` on the host (PORT=3001), so that ports and
+# environment variables stay visible while you set the integration up.
+#
+#   docker compose -f compose.voidauth.yml up -d
+#   open http://localhost:3000     # VoidAuth: create the first admin account
+#   ...create the OIDC app (see README), then:
+#   PORT=3001 DATABASE_URL=postgres://pass:pass@localhost:5433/pass \
+#     OIDC_ISSUER=http://localhost:3000/oidc OIDC_CLIENT_ID=pass-app \
+#     OIDC_CLIENT_SECRET=<secret> \
+#     OIDC_REDIRECT_URI=http://localhost:3001/api/auth/oidc/callback npm start
+
+services:
+  voidauth:
+    image: voidauth/voidauth:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data/voidauth/config:/app/config
+    environment:
+      APP_URL: http://localhost:3000
+      DB_ADAPTER: postgres
+      DB_HOST: voidauth-db
+      DB_PASSWORD: voidauth-dev-password
+      # Encrypts secrets at rest. Generate a real one for anything but a laptop.
+      STORAGE_KEY: dev-storage-key-change-me
+    depends_on:
+      voidauth-db:
+        condition: service_healthy
+
+  voidauth-db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: voidauth-dev-password
+    volumes:
+      - ./data/voidauth/db:/var/lib/postgresql/18/docker
+    healthcheck:
+      test: "pg_isready -U postgres -h localhost"
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # The pass application's own database. VoidAuth keeps identities; this keeps
+  # passes and scans. They are deliberately separate.
+  pass-db:
+    image: postgres:16
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: pass
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: pass
+    volumes:
+      - ./data/pass-db:/var/lib/postgresql/data
+    healthcheck:
+      test: "pg_isready -U pass"
+      interval: 5s
+      timeout: 5s
+      retries: 10

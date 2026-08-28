@@ -1,4 +1,5 @@
 import { api, ApiError } from '/lib/api.js';
+import { setupSso, showSsoError, finishLogout } from '/lib/sso.js';
 import { parseToken, verifyOffline, importVerifyKey, offlineVerificationSupported } from '/staff/lib/passtoken.js';
 
 const el = (id) => document.getElementById(id);
@@ -312,8 +313,9 @@ el('form-login').addEventListener('submit', async (event) => {
 
 el('btn-logout').addEventListener('click', async () => {
   stopCamera();
-  await api.logout().catch(() => {});
+  const result = await api.logout().catch(() => null);
   state.staff = null;
+  if (finishLogout(result)) return;
   showView('auth');
 });
 
@@ -357,13 +359,36 @@ async function enterScanner(staff) {
   await Promise.all([loadScans(), queue.flush()]);
 }
 
+function applyAuthMethods(auth) {
+  if (!auth) return;
+  setupSso({
+    auth,
+    next: '/staff/',
+    elements: {
+      block: el('sso-block'),
+      button: el('btn-sso'),
+      name: el('sso-name'),
+      divider: el('sso-divider'),
+      error: el('sso-error'),
+    },
+  });
+  el('form-login').hidden = !auth.local;
+}
+
 (async function boot() {
   el('offline-banner').hidden = navigator.onLine;
   try {
     const session = await api.me();
+    applyAuthMethods(session.server?.auth);
+    showSsoError(el('sso-error'));
     if (session.user && (session.user.role === 'staff' || session.user.role === 'admin')) {
       await enterScanner(session.user);
     } else {
+      if (session.user) {
+        const error = el('sso-error');
+        error.textContent = 'у этого аккаунта нет доступа сотрудника';
+        error.hidden = false;
+      }
       showView('auth');
     }
   } catch {

@@ -19,6 +19,15 @@
         <h1 class="brand">Пропуск</h1>
         <p class="muted">Личный кабинет и динамический пропуск</p>
 
+        <p class="form-error" id="sso-error" hidden></p>
+
+        <div id="sso-block" hidden>
+          <button class="btn btn-primary btn-sso" id="btn-sso" type="button">
+            Войти через <span id="sso-name">SSO</span>
+          </button>
+          <p class="divider" id="sso-divider"><span>или по паролю</span></p>
+        </div>
+
         <div class="tabs" role="tablist">
           <button class="tab is-active" data-tab="login" role="tab" type="button">Вход</button>
           <button class="tab" data-tab="register" role="tab" type="button">Регистрация</button>

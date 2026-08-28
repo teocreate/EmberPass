@@ -1,6 +1,7 @@
 import { HttpError, readJson, sendJson, parseCookies, serializeCookie, clientIp } from '../lib/http.js';
 import { hashPassword, verifyPassword, randomToken, sha256 } from '../lib/crypto.js';
 import { checkEmail } from '../lib/email.js';
+import { buildLogoutUrl } from '../lib/oidc.js';
 import { config } from '../config.js';
 
 export const SESSION_COOKIE = 'sid';
@@ -30,11 +31,11 @@ export function publicPass(pass) {
   );
 }
 
-function passSerial(userId) {
+export function passSerial(userId) {
   return `PS-${String(userId).padStart(5, '0')}-${randomToken(3).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4)}`;
 }
 
-async function startSession(ctx, res, user, req) {
+export async function startSession(ctx, res, user, req, { idToken = null } = {}) {
   const token = randomToken(32);
   await ctx.store.createSession({
     tokenHash: sha256(token),
@@ -42,6 +43,7 @@ async function startSession(ctx, res, user, req) {
     expiresAt: new Date(Date.now() + config.sessionTtl * 1000),
     userAgent: String(req.headers['user-agent'] || '').slice(0, 200),
     ip: clientIp(req),
+    idToken,
   });
   res.setHeader(
     'set-cookie',
@@ -75,6 +77,9 @@ export async function requireStaff(ctx, req) {
 }
 
 export async function handleRegister(ctx, req, res) {
+  if (!config.localAuthEnabled) {
+    throw new HttpError(403, 'local_login_disabled', 'аккаунты заводятся в системе единого входа');
+  }
   if (!config.registrationOpen) throw new HttpError(403, 'registration_closed', 'регистрация закрыта');
   const ip = clientIp(req);
   const limit = ctx.limiters.register.check(ip);
@@ -111,6 +116,9 @@ export async function handleRegister(ctx, req, res) {
 }
 
 export async function handleLogin(ctx, req, res) {
+  if (!config.localAuthEnabled) {
+    throw new HttpError(403, 'local_login_disabled', 'вход по паролю отключён, используйте единый вход');
+  }
   const body = await readJson(req);
   const email = String(body.email || '').trim().toLowerCase();
   const password = String(body.password || '');
@@ -119,7 +127,7 @@ export async function handleLogin(ctx, req, res) {
   if (!limit.allowed) throw new HttpError(429, 'rate_limited', `слишком много попыток, повторите через ${limit.retryAfter} с`);
 
   const user = email ? await ctx.store.findUserByEmail(email) : null;
-  const ok = user ? await verifyPassword(password, user.passwordHash) : false;
+  const ok = user && user.passwordHash ? await verifyPassword(password, user.passwordHash) : false;
   if (!user || !ok) throw new HttpError(401, 'invalid_credentials', 'неверный email или пароль');
   if (user.status !== 'active') throw new HttpError(403, 'account_suspended', 'аккаунт заблокирован');
 
@@ -132,14 +140,43 @@ export async function handleLogin(ctx, req, res) {
 
 export async function handleLogout(ctx, req, res) {
   const token = parseCookies(req)[SESSION_COOKIE];
-  if (token) await ctx.store.deleteSession(sha256(token));
+  let idToken = null;
+  if (token) {
+    const session = await ctx.store.findSession(sha256(token));
+    idToken = session?.idToken ?? null;
+    await ctx.store.deleteSession(sha256(token));
+  }
   res.setHeader('set-cookie', serializeCookie(SESSION_COOKIE, '', { maxAge: 0, secure: config.secureCookies }));
-  sendJson(res, 200, { ok: true });
+
+  // Ending the local session leaves the provider session alive, so the next sign-in
+  // would go straight through. Hand the app a URL that ends it there as well.
+  let redirectTo = null;
+  if (idToken && config.oidcEnabled && config.oidc.rpLogout) {
+    const origin = requestOrigin(req);
+    redirectTo = await buildLogoutUrl({ idToken, redirectTo: origin }).catch(() => null);
+  }
+  sendJson(res, 200, { ok: true, redirectTo });
+}
+
+/** Best-effort public origin of this deployment, for provider redirects. */
+export function requestOrigin(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || (config.secureCookies ? 'https' : 'http')).split(',')[0];
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+  return `${proto}://${host}`;
 }
 
 export async function handleMe(ctx, req, res) {
-  // `server` lets the apps tell the user when a deployment is only good for a demo.
-  const server = { storage: ctx.store.kind, warnings: ctx.warnings ?? [] };
+  // `server` lets the apps tell the user when a deployment is only good for a demo,
+  // and which sign-in methods to offer.
+  const server = {
+    storage: ctx.store.kind,
+    warnings: ctx.warnings ?? [],
+    auth: {
+      local: config.localAuthEnabled,
+      registration: config.localAuthEnabled && config.registrationOpen,
+      oidc: config.oidcEnabled ? { displayName: config.oidc.displayName, startUrl: '/api/auth/oidc/start' } : null,
+    },
+  };
   const user = await currentUser(ctx, req);
   if (!user) return sendJson(res, 200, { user: null, pass: null, server });
   const pass = await ctx.store.findPassByUserId(user.id);

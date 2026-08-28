@@ -84,6 +84,11 @@ a { color: var(--accent); }
 }
 .tab.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 
+.btn-sso { width: 100%; margin-bottom: 4px; }
+
+.divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.85rem; margin: 14px 0 4px; }
+.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+
 .form { display: grid; gap: 14px; }
 .field { display: grid; gap: 6px; font-size: 0.9rem; color: var(--muted); }
 .field input {
