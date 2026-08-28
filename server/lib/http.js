@@ -42,6 +42,15 @@ export function sendError(res, error) {
 }
 
 export async function readJson(req, { limit = 64 * 1024 } = {}) {
+  // Serverless platforms hand over an already-parsed body and an exhausted stream.
+  if (req.body !== undefined && req.body !== null) {
+    const parsed = typeof req.body === 'string' ? safeParse(req.body) : req.body;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new HttpError(400, 'invalid_json', 'expected a JSON object');
+    }
+    return parsed;
+  }
+
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -58,6 +67,15 @@ export async function readJson(req, { limit = 64 * 1024 } = {}) {
     return parsed;
   } catch (error) {
     if (error instanceof HttpError) throw error;
+    throw new HttpError(400, 'invalid_json', 'request body is not valid JSON');
+  }
+}
+
+function safeParse(text) {
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
     throw new HttpError(400, 'invalid_json', 'request body is not valid JSON');
   }
 }

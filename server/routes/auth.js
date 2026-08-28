@@ -62,32 +62,32 @@ export async function currentUser(ctx, req) {
 
 export async function requireUser(ctx, req) {
   const user = await currentUser(ctx, req);
-  if (!user) throw new HttpError(401, 'unauthenticated', 'sign in first');
+  if (!user) throw new HttpError(401, 'unauthenticated', 'нужно войти в систему');
   return user;
 }
 
 export async function requireStaff(ctx, req) {
   const user = await requireUser(ctx, req);
   if (user.role !== 'staff' && user.role !== 'admin') {
-    throw new HttpError(403, 'forbidden', 'staff access required');
+    throw new HttpError(403, 'forbidden', 'нужен доступ сотрудника');
   }
   return user;
 }
 
 export async function handleRegister(ctx, req, res) {
-  if (!config.registrationOpen) throw new HttpError(403, 'registration_closed', 'registration is closed');
+  if (!config.registrationOpen) throw new HttpError(403, 'registration_closed', 'регистрация закрыта');
   const ip = clientIp(req);
   const limit = ctx.limiters.register.check(ip);
-  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `too many attempts, retry in ${limit.retryAfter}s`);
+  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `слишком много попыток, повторите через ${limit.retryAfter} с`);
 
   const body = await readJson(req);
   const fullName = String(body.fullName || '').trim();
   const password = String(body.password || '');
   if (fullName.length < 2 || fullName.length > 120) {
-    throw new HttpError(400, 'invalid_name', 'name must be 2-120 characters');
+    throw new HttpError(400, 'invalid_name', 'имя должно быть от 2 до 120 символов');
   }
   if (password.length < MIN_PASSWORD_LENGTH) {
-    throw new HttpError(400, 'weak_password', `password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+    throw new HttpError(400, 'weak_password', `пароль должен быть не короче ${MIN_PASSWORD_LENGTH} символов`);
   }
 
   const email = await checkEmail(body.email, {
@@ -101,7 +101,7 @@ export async function handleRegister(ctx, req, res) {
   try {
     user = await ctx.store.createUser({ email: email.email, passwordHash, fullName });
   } catch (error) {
-    if (error.code === '23505') throw new HttpError(409, 'email_taken', 'this email is already registered');
+    if (error.code === '23505') throw new HttpError(409, 'email_taken', 'этот email уже зарегистрирован');
     throw error;
   }
   const pass = await ctx.store.createPass({ userId: user.id, serial: passSerial(user.id) });
@@ -116,12 +116,12 @@ export async function handleLogin(ctx, req, res) {
   const password = String(body.password || '');
   const key = `${clientIp(req)}|${email}`;
   const limit = ctx.limiters.login.check(key);
-  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `too many attempts, retry in ${limit.retryAfter}s`);
+  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `слишком много попыток, повторите через ${limit.retryAfter} с`);
 
   const user = email ? await ctx.store.findUserByEmail(email) : null;
   const ok = user ? await verifyPassword(password, user.passwordHash) : false;
-  if (!user || !ok) throw new HttpError(401, 'invalid_credentials', 'wrong email or password');
-  if (user.status !== 'active') throw new HttpError(403, 'account_suspended', 'this account is suspended');
+  if (!user || !ok) throw new HttpError(401, 'invalid_credentials', 'неверный email или пароль');
+  if (user.status !== 'active') throw new HttpError(403, 'account_suspended', 'аккаунт заблокирован');
 
   ctx.limiters.login.reset(key);
   await ctx.store.touchLogin(user.id);
@@ -138,16 +138,18 @@ export async function handleLogout(ctx, req, res) {
 }
 
 export async function handleMe(ctx, req, res) {
+  // `server` lets the apps tell the user when a deployment is only good for a demo.
+  const server = { storage: ctx.store.kind, warnings: ctx.warnings ?? [] };
   const user = await currentUser(ctx, req);
-  if (!user) return sendJson(res, 200, { user: null, pass: null });
+  if (!user) return sendJson(res, 200, { user: null, pass: null, server });
   const pass = await ctx.store.findPassByUserId(user.id);
-  sendJson(res, 200, { user: publicUser(user), pass: publicPass(pass) });
+  sendJson(res, 200, { user: publicUser(user), pass: publicPass(pass), server });
 }
 
 /** Lets the signup form show email problems before the account is created. */
 export async function handleCheckEmail(ctx, req, res) {
   const limit = ctx.limiters.emailCheck.check(clientIp(req));
-  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `too many attempts, retry in ${limit.retryAfter}s`);
+  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `слишком много попыток, повторите через ${limit.retryAfter} с`);
   const body = await readJson(req);
   const result = await checkEmail(body.email, {
     checkMx: config.checkEmailMx,
@@ -165,13 +167,13 @@ export async function handleCheckEmail(ctx, req, res) {
 function describeEmailReason(reason) {
   switch (reason) {
     case 'invalid_syntax':
-      return 'this does not look like an email address';
+      return 'это не похоже на адрес электронной почты';
     case 'disposable_domain':
-      return 'disposable email addresses are not accepted';
+      return 'одноразовые адреса не принимаются';
     case 'no_mx_record':
-      return 'this domain cannot receive email';
+      return 'этот домен не принимает почту';
     default:
-      return 'email address rejected';
+      return 'адрес отклонён';
   }
 }
 

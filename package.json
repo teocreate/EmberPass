@@ -4,13 +4,16 @@
   "private": true,
   "description": "Vanilla JS PWA with a personal account and a dynamic QR / PDF417 pass, backed by a Node + PostgreSQL service",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server/index.js",
     "seed": "node scripts/seed.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "genkey": "node scripts/genkey.js"
   },
-  "optionalDependencies": {
+  "dependencies": {
     "pg": "^8.13.1"
   }
 }

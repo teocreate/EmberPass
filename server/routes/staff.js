@@ -14,7 +14,7 @@ import { config } from '../config.js';
 export async function handleVerify(ctx, req, res) {
   const staff = await requireStaff(ctx, req);
   const limit = ctx.limiters.verify.check(`${staff.id}`);
-  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `too many scans, retry in ${limit.retryAfter}s`);
+  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `слишком много проверок, повторите через ${limit.retryAfter} с`);
 
   const body = await readJson(req);
   const gate = body.gate ? String(body.gate).slice(0, 64) : null;
@@ -30,7 +30,7 @@ export async function handleVerify(ctx, req, res) {
   if (!parsed.ok && !parsed.payload) {
     // Nothing trustworthy to log against a pass; record the attempt only.
     await ctx.store.recordScan({ jti: null, staffId: staff.id, gate, result: `denied_${parsed.reason}`, offline });
-    return sendJson(res, 200, deny(parsed.reason, 'This code is not a valid pass'));
+    return sendJson(res, 200, deny(parsed.reason, 'это не пропуск'));
   }
 
   const payload = parsed.payload;
@@ -56,7 +56,7 @@ export async function handleVerify(ctx, req, res) {
     return sendJson(res, 200, {
       status: 'denied',
       reason: 'already_used',
-      message: 'This pass code was already scanned',
+      message: 'этот код уже сканировали',
       previousScan: original ? publicScan(original) : null,
       holder: holder ? { fullName: holder.fullName } : null,
       pass: pass ? { serial: pass.serial, tier: pass.tier } : null,
@@ -77,7 +77,7 @@ export async function handleVerify(ctx, req, res) {
   sendJson(res, 200, {
     status: 'granted',
     reason: null,
-    message: 'Access granted',
+    message: 'проход разрешён',
     holder: { fullName: holder.fullName, email: holder.email },
     pass: { serial: pass.serial, tier: pass.tier, status: pass.status, validUntil: pass.validUntil },
     scan: publicScan(recorded),
@@ -87,18 +87,18 @@ export async function handleVerify(ctx, req, res) {
 
 function evaluate(parsed, pass, holder, payload) {
   if (!parsed.ok) return { reason: parsed.reason, message: messageFor(parsed.reason) };
-  if (!pass) return { reason: 'unknown_pass', message: 'This pass no longer exists' };
-  if (!holder) return { reason: 'unknown_holder', message: 'The pass holder no longer exists' };
-  if (pass.userId !== payload.userId) return { reason: 'pass_mismatch', message: 'Pass does not belong to this holder' };
-  if (pass.status !== 'active') return { reason: `pass_${pass.status}`, message: `Pass is ${pass.status}` };
-  if (holder.status !== 'active') return { reason: 'holder_suspended', message: 'Pass holder is suspended' };
+  if (!pass) return { reason: 'unknown_pass', message: 'пропуск не найден' };
+  if (!holder) return { reason: 'unknown_holder', message: 'владелец пропуска не найден' };
+  if (pass.userId !== payload.userId) return { reason: 'pass_mismatch', message: 'пропуск не принадлежит владельцу' };
+  if (pass.status !== 'active') return { reason: `pass_${pass.status}`, message: `пропуск: ${pass.status}` };
+  if (holder.status !== 'active') return { reason: 'holder_suspended', message: 'владелец заблокирован' };
 
   const now = Date.now();
   if (pass.validUntil && new Date(pass.validUntil).getTime() < now) {
-    return { reason: 'pass_expired', message: 'Pass validity period has ended' };
+    return { reason: 'pass_expired', message: 'срок действия пропуска истёк' };
   }
   if (pass.validFrom && new Date(pass.validFrom).getTime() > now) {
-    return { reason: 'pass_not_active_yet', message: 'Pass is not valid yet' };
+    return { reason: 'pass_not_active_yet', message: 'пропуск ещё не активен' };
   }
   return null;
 }
@@ -106,17 +106,17 @@ function evaluate(parsed, pass, holder, payload) {
 function messageFor(reason) {
   switch (reason) {
     case 'expired':
-      return 'This code has expired - ask for a fresh one';
+      return 'код просрочен — попросите обновить';
     case 'not_yet_valid':
-      return 'This code is not valid yet (device clock out of sync?)';
+      return 'код ещё не действителен (расходятся часы устройств?)';
     case 'bad_signature':
-      return 'Signature does not match - possible forgery';
+      return 'подпись не совпала — возможна подделка';
     case 'unknown_key':
-      return 'Signed with an unknown key';
+      return 'подписано неизвестным ключом';
     case 'unsupported_version':
-      return 'Unsupported pass format';
+      return 'неподдерживаемый формат пропуска';
     default:
-      return 'This code is not a valid pass';
+      return 'это не пропуск';
   }
 }
 

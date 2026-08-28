@@ -302,10 +302,23 @@ window.addEventListener('offline', () => {
   el('offline-banner').hidden = false;
 });
 
+const CONFIG_WARNINGS = {
+  ephemeral_storage: 'база данных не подключена — аккаунты и проходы живут только до перезапуска сервера',
+  ephemeral_signing_key: 'ключ подписи не задан — коды перестанут проверяться после перезапуска',
+};
+
+function showConfigWarnings(server) {
+  const messages = (server?.warnings || []).map((code) => CONFIG_WARNINGS[code]).filter(Boolean);
+  const banner = el('config-banner');
+  banner.hidden = messages.length === 0;
+  banner.textContent = messages.length ? `Демо-режим: ${messages.join('; ')}` : '';
+}
+
 (async function boot() {
   el('offline-banner').hidden = navigator.onLine;
   try {
     const session = await api.me();
+    showConfigWarnings(session.server);
     if (session.user) {
       await enterCabinet(session.user, session.pass);
     } else {

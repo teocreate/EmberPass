@@ -157,3 +157,4 @@ a { color: var(--accent); }
   position: sticky; top: 0; z-index: 5; text-align: center; padding: 8px 12px;
   background: var(--warn); color: #1b1300; font-size: 0.9rem;
 }
+.banner-info { background: var(--surface-2); color: var(--muted); border-bottom: 1px solid var(--line); }
