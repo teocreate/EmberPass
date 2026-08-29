@@ -11,7 +11,8 @@
     "start": "node server/index.js",
     "seed": "node scripts/seed.js",
     "test": "node --test test/*.test.js",
-    "genkey": "node scripts/genkey.js"
+    "genkey": "node scripts/genkey.js",
+    "dbcheck": "node scripts/dbcheck.js"
   },
   "dependencies": {
     "pg": "^8.13.1"
