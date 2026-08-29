@@ -2,12 +2,55 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+import { config } from '../config.js';
+
 const here = dirname(fileURLToPath(import.meta.url));
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '']);
+
+/**
+ * Decides the TLS settings for the connection.
+ *
+ * Left to itself, node-postgres connects in the clear unless the URL carries an
+ * sslmode, which hosted providers refuse - and where an sslmode is given, pg 8
+ * treats `require` as `verify-full`, which fails against a private CA such as the
+ * one on Supabase's direct connections. Being explicit avoids both traps.
+ */
+export function resolveSsl(databaseUrl, mode = config.databaseSsl, caCert = config.databaseCaCert) {
+  let host = '';
+  try {
+    host = new URL(databaseUrl).hostname;
+  } catch {
+    // A libpq keyword string or a socket path, which means a local server.
+    host = '';
+  }
+  const local = LOCAL_HOSTS.has(host) || host.endsWith('.local');
+  const effective = mode === 'auto' ? (local ? 'disable' : 'require') : mode;
+
+  switch (effective) {
+    case 'disable':
+      return false;
+    case 'no-verify':
+      // Encrypted, but the certificate chain is not checked. For a private CA
+      // prefer DATABASE_CA_CERT, which keeps verification on.
+      return { rejectUnauthorized: false };
+    case 'require':
+    case 'verify-full':
+      return caCert ? { ca: caCert, rejectUnauthorized: true } : { rejectUnauthorized: true };
+    default:
+      throw new Error(`DATABASE_SSL must be auto, disable, no-verify, require or verify-full (got ${mode})`);
+  }
+}
 
 /** PostgreSQL-backed repository. Requires the `pg` package and DATABASE_URL. */
 export async function createPostgresStore(databaseUrl) {
   const { default: pg } = await import('pg');
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
+  const pool = new pg.Pool({
+    connectionString: databaseUrl,
+    max: config.databasePoolMax,
+    ssl: resolveSsl(databaseUrl),
+    application_name: 'dynamic-pass',
+  });
   await pool.query(readFileSync(join(here, 'schema.sql'), 'utf8'));
 
   const one = async (text, params) => (await pool.query(text, params)).rows[0] || null;

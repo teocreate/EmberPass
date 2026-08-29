@@ -46,7 +46,8 @@ const SECURITY_HEADERS = {
 /** Builds the shared application context: storage, signing key and rate limiters. */
 export async function createContext() {
   const store = await getStore();
-  const signer = new PassSigner(loadSigningKey());
+  const signingKey = loadSigningKey();
+  const signer = new PassSigner(signingKey);
   const limiters = {
     login: new RateLimiter({ limit: 10, windowMs: 5 * 60 * 1000 }),
     register: new RateLimiter({ limit: 5, windowMs: 60 * 60 * 1000 }),
@@ -57,7 +58,10 @@ export async function createContext() {
 
   const warnings = [];
   if (store.kind === 'memory') warnings.push('ephemeral_storage');
-  if (config.serverless && !process.env.SIGNING_KEY) warnings.push('ephemeral_signing_key');
+  // A key generated at start-up lives only as long as this instance. On hosts with
+  // an ephemeral filesystem (Render, Fly, containers, serverless) that means every
+  // deploy invalidates passes issued by the previous one.
+  if (signingKey.source === 'generated') warnings.push('ephemeral_signing_key');
 
   return {
     store,

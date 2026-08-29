@@ -66,3 +66,20 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_sub text;
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_key ON users (oidc_sub);
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS id_token text;
+
+-- On Supabase every table in the `public` schema is reachable through PostgREST
+-- with the project's public anon key. These tables hold password hashes, session
+-- rows and the scan log, so they must never be readable that way: drop the grants
+-- PostgREST relies on and switch row level security on. The whole block is skipped
+-- on a plain PostgreSQL, where those roles do not exist; the application connects
+-- as the owner and is unaffected either way.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON TABLE users, passes, sessions, pass_scans FROM anon, authenticated;
+    ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE passes ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE pass_scans ENABLE ROW LEVEL SECURITY;
+  END IF;
+END $$;
