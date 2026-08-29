@@ -27,9 +27,12 @@ function svgElement(width, height, path, label) {
 export function renderBarcode(container, token, format) {
   container.replaceChildren();
   if (format === 'pdf417') {
-    // A wide, short symbol scans better off a phone screen than a tall one.
-    const symbol = encodePDF417(token, { columns: 10, ecLevel: 4 });
-    const { width, height, path } = pdf417ToSvg(symbol, { rowHeight: 3, quietZone: 2 });
+    // Few columns on purpose. A wide, short symbol looks tidier but packs the modules
+    // too tightly to survive a phone camera: measured against blur and a few degrees
+    // of tilt, 10 columns failed where 4 held - the modules are simply wider, and the
+    // taller rows give the decoder more to sample vertically.
+    const symbol = encodePDF417(token, { columns: 4, ecLevel: 4 });
+    const { width, height, path } = pdf417ToSvg(symbol, { rowHeight: 4, quietZone: 2 });
     container.appendChild(svgElement(width, height, path, 'PDF417 код пропуска'));
     return { format, version: `${symbol.columns}x${symbol.rows}` };
   }
