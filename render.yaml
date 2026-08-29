@@ -1,0 +1,31 @@
+# Render blueprint. Create the service from this file, then set the two secrets
+# marked `sync: false` in the dashboard.
+#
+#   DATABASE_URL  connection string of the PostgreSQL database (e.g. Supabase)
+#   SIGNING_KEY   output of `npm run genkey`
+#
+# Both matter: Render's filesystem is wiped on every deploy, so without them the
+# database falls back to memory and the pass signing key is regenerated - accounts
+# disappear and previously issued passes stop verifying.
+services:
+  - type: web
+    name: dynamic-pass
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/verify/key
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        sync: false
+      - key: SIGNING_KEY
+        sync: false
+      # Render terminates TLS in front of the app, so session cookies can be Secure.
+      - key: SECURE_COOKIES
+        value: "true"
+      # Supabase and other hosted databases require TLS; `auto` turns it on for
+      # every host except localhost.
+      - key: DATABASE_SSL
+        value: auto

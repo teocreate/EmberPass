@@ -42,6 +42,13 @@ export const config = {
   databaseUrl: process.env.DATABASE_URL || '',
   // Falls back to an in-memory store so the app can be demoed without PostgreSQL.
   storage: process.env.DATABASE_URL ? 'postgres' : 'memory',
+  // TLS for the database connection: auto (on for every host but localhost),
+  // require, no-verify (accept a self-signed chain), verify-full, or disable.
+  databaseSsl: (process.env.DATABASE_SSL || 'auto').toLowerCase(),
+  // PEM of the provider's CA, so verification can stay on with a private chain.
+  databaseCaCert: process.env.DATABASE_CA_CERT || '',
+  // Serverless instances each hold their own pool, so they must stay small.
+  databasePoolMax: int('DATABASE_POOL_MAX', serverless ? 2 : 10),
   keyFile: process.env.SIGNING_KEY_FILE || resolve(process.cwd(), 'data/signing-key.json'),
   passTokenTtl: int('PASS_TOKEN_TTL', 30), // seconds a QR/PDF417 pass stays valid
   passTokenRefresh: int('PASS_TOKEN_REFRESH', 12), // client refresh interval, seconds
@@ -98,7 +105,12 @@ export function generateSigningKey(kid = 1) {
   };
 }
 
-const shape = (record) => ({ kid: record.kid, privateKeyPem: record.privateKey, publicKeyPem: record.publicKey });
+const shape = (record, source) => ({
+  kid: record.kid,
+  privateKeyPem: record.privateKey,
+  publicKeyPem: record.publicKey,
+  source,
+});
 
 /**
  * Loads the Ed25519 signing key pair. Passes are signed asymmetrically so staff
@@ -116,11 +128,11 @@ export function loadSigningKey() {
     if (!stored.privateKey || !stored.publicKey) {
       throw new Error('SIGNING_KEY must contain privateKey and publicKey PEM values');
     }
-    return shape({ kid: stored.kid ?? 1, ...stored });
+    return shape({ kid: stored.kid ?? 1, ...stored }, 'env');
   }
 
   if (existsSync(config.keyFile)) {
-    return shape(JSON.parse(readFileSync(config.keyFile, 'utf8')));
+    return shape(JSON.parse(readFileSync(config.keyFile, 'utf8')), 'file');
   }
 
   const record = generateSigningKey();
@@ -135,5 +147,5 @@ export function loadSigningKey() {
         'Set SIGNING_KEY (see: npm run genkey) to keep passes verifiable across restarts.',
     );
   }
-  return shape(record);
+  return shape(record, 'generated');
 }
