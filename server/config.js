@@ -38,7 +38,7 @@ function readCaCert(raw) {
   const value = (raw || '').trim();
   if (!value) return '';
   if (value.includes('-----BEGIN CERTIFICATE-----')) return value;
-  const decoded = Buffer.from(value, 'base64').toString('utf8');
+  const decoded = Buffer.from(value, 'base64').toString('utf8').trim();
   if (decoded.includes('-----BEGIN CERTIFICATE-----')) return decoded;
   throw new Error('DATABASE_CA_CERT must be a PEM certificate, or that certificate encoded as base64');
 }
