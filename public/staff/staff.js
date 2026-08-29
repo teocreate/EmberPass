@@ -22,6 +22,8 @@ const state = {
   busy: false,
   resultTimer: null,
   formats: ['qr'],
+  torchTrack: null,
+  torchOn: false,
 };
 
 /** Today shows as a time, anything older gets a short date - a full timestamp
@@ -265,13 +267,66 @@ async function startCamera() {
   }
   el('camera-card').hidden = false;
   el('scanner-note').textContent = describeScanner(state.detector);
+  setupTorch();
   state.scanning = true;
   scanLoop();
+}
+
+/*
+ * The lamp is a property of the video track, not of the page, and only some devices
+ * expose it: Chrome on Android does, Safari on iOS does not expose it at all. So the
+ * button appears only where it can actually turn something on, rather than sitting
+ * there dead on half the phones that reach the gate.
+ */
+function setupTorch() {
+  const btn = el('btn-torch');
+  state.torchTrack = null;
+  state.torchOn = false;
+  btn.hidden = true;
+  btn.classList.remove('is-on');
+  btn.setAttribute('aria-pressed', 'false');
+
+  const track = state.stream?.getVideoTracks?.()[0];
+  if (!track || typeof track.getCapabilities !== 'function') return;
+  let capabilities;
+  try {
+    capabilities = track.getCapabilities();
+  } catch {
+    return;
+  }
+  if (capabilities.torch !== true) return;
+  state.torchTrack = track;
+  btn.hidden = false;
+}
+
+async function toggleTorch() {
+  if (!state.torchTrack) return;
+  const next = !state.torchOn;
+  const btn = el('btn-torch');
+  try {
+    await state.torchTrack.applyConstraints({ advanced: [{ torch: next }] });
+  } catch (error) {
+    // The lamp can be refused while another app holds it, or on a device that
+    // advertises the capability but not the constraint.
+    state.torchTrack = null;
+    btn.hidden = true;
+    el('scanner-note').textContent = `Фонарик недоступен: ${error.message}`;
+    return;
+  }
+  state.torchOn = next;
+  btn.classList.toggle('is-on', next);
+  btn.setAttribute('aria-pressed', String(next));
 }
 
 function stopCamera() {
   state.scanning = false;
   state.detector = null;
+  state.torchTrack = null;
+  state.torchOn = false;
+  el('btn-torch').hidden = true;
+  el('btn-torch').classList.remove('is-on');
+  el('btn-torch').setAttribute('aria-pressed', 'false');
+  // Stopping the track puts the lamp out with it.
   if (state.stream) state.stream.getTracks().forEach((track) => track.stop());
   state.stream = null;
   el('video').srcObject = null;
@@ -364,6 +419,7 @@ el('btn-logout').addEventListener('click', async () => {
 el('result').addEventListener('click', hideResult);
 el('btn-camera').addEventListener('click', startCamera);
 el('btn-stop-camera').addEventListener('click', stopCamera);
+el('btn-torch').addEventListener('click', toggleTorch);
 el('btn-manual').addEventListener('click', () => {
   el('manual-card').hidden = !el('manual-card').hidden;
   if (!el('manual-card').hidden) el('manual-token').focus();
