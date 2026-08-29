@@ -15,6 +15,16 @@ export function loadDotEnv(path = resolve(process.cwd(), '.env')) {
 
 loadDotEnv();
 
+/**
+ * Reads an environment variable, tolerating what copy-paste into a hosting
+ * dashboard adds: surrounding whitespace and a pair of matching quotes.
+ */
+const env = (name) => {
+  const raw = (process.env[name] ?? '').trim();
+  const quoted = /^(['"])([\s\S]*)\1$/.exec(raw);
+  return quoted ? quoted[2].trim() : raw;
+};
+
 const int = (name, fallback) => {
   const raw = process.env[name];
   const value = raw === undefined ? fallback : Number.parseInt(raw, 10);
@@ -50,16 +60,16 @@ export const config = {
   serverless,
   port: int('PORT', 3000),
   host: process.env.HOST || '0.0.0.0',
-  databaseUrl: process.env.DATABASE_URL || '',
+  databaseUrl: env('DATABASE_URL'),
   // Falls back to an in-memory store so the app can be demoed without PostgreSQL.
-  storage: process.env.DATABASE_URL ? 'postgres' : 'memory',
+  storage: env('DATABASE_URL') ? 'postgres' : 'memory',
   // TLS for the database connection: auto (on for every host but localhost),
   // require, no-verify (accept a self-signed chain), verify-full, or disable.
   databaseSsl: (process.env.DATABASE_SSL || 'auto').toLowerCase(),
   // The provider's CA, so verification can stay on with a private chain. Accepts a
   // PEM or that PEM in base64, because a one-line value survives copy-paste into a
   // hosting dashboard where a multi-line one often does not.
-  databaseCaCert: readCaCert(process.env.DATABASE_CA_CERT),
+  databaseCaCert: readCaCert(env('DATABASE_CA_CERT')),
   // Serverless instances each hold their own pool, so they must stay small.
   databasePoolMax: int('DATABASE_POOL_MAX', serverless ? 2 : 10),
   keyFile: process.env.SIGNING_KEY_FILE || resolve(process.cwd(), 'data/signing-key.json'),
@@ -135,7 +145,7 @@ const shape = (record, source) => ({
  */
 export function loadSigningKey() {
   if (process.env.SIGNING_KEY) {
-    const raw = process.env.SIGNING_KEY.trim();
+    const raw = env('SIGNING_KEY');
     // The value is what `npm run genkey` prints, not the command itself - a mistake
     // that otherwise surfaces as a JSON parse error full of binary noise.
     const hint = 'SIGNING_KEY must be the output of `npm run genkey` (a base64 string), not the command itself';

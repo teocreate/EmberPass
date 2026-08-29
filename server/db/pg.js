@@ -52,6 +52,14 @@ export function parseDatabaseUrl(databaseUrl) {
           'percent-encode those characters (@ as %40, : as %3A, / as %2F, ? as %3F, # as %23, space as %20).',
       );
     }
+    // The whole shell command pasted into the value, variable name and all.
+    const assignment = /^([A-Z_][A-Z0-9_]*)\s*=/i.exec(value);
+    if (assignment) {
+      throw new Error(
+        `DATABASE_URL contains the assignment "${assignment[1]}=..." rather than a value. Set only the URL ` +
+          `itself: ${expected} - no variable name, no quotes, no trailing command.`,
+      );
+    }
     throw new Error(
       `DATABASE_URL is not a connection URL (starts with "${value.slice(0, 24)}"). Expected ${expected} - ` +
         'not a psql command line and not the example from .env.example.',

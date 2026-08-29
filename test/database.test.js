@@ -188,3 +188,9 @@ test('a rejected password reports how long the one sent was', () => {
   assert.match(message, /12 characters were sent/, 'a truncated password shows up as a wrong length');
   assert.match(message, /database password, not the account password/);
 });
+
+test('a pasted shell command is reported as such, not as a bad URL', () => {
+  const pasted = 'DATABASE_URL="postgres://postgres.ref:pw@aws-1.pooler.supabase.com:5432/postgres" npm run dbcheck';
+  assert.throws(() => parseDatabaseUrl(pasted), /contains the assignment "DATABASE_URL=\.\.\."/);
+  assert.throws(() => parseDatabaseUrl(pasted), /no variable name, no quotes, no trailing command/);
+});
