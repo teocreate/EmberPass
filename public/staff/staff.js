@@ -20,6 +20,8 @@ const state = {
   lastToken: null,
   lastAt: 0,
   busy: false,
+  resultTimer: null,
+  formats: ['qr'],
 };
 
 /** Today shows as a time, anything older gets a short date - a full timestamp
@@ -100,14 +102,31 @@ function feedback(kind) {
   navigator.vibrate(kind === 'granted' ? 60 : [50, 60, 50]);
 }
 
-function showResult(kind, title, name, meta) {
+/**
+ * The verdict takes the whole screen. At a gate it has to be readable at arm's
+ * length in bad light, and covering the camera for a moment is a feature: it stops
+ * the next person's code being read before this one has been acted on.
+ *
+ * A grant clears itself - the queue moves on. A refusal stays until it is dismissed,
+ * because someone has to read why.
+ */
+function showResult(kind, title, name, meta, serial) {
   const node = el('result');
+  clearTimeout(state.resultTimer);
   node.hidden = false;
   node.className = `result is-${kind}`;
   el('result-title').textContent = title;
   el('result-name').textContent = name || '';
+  el('result-serial').textContent = serial || '';
   el('result-meta').textContent = meta || '';
   feedback(kind);
+
+  if (kind === 'granted') state.resultTimer = setTimeout(hideResult, 2500);
+}
+
+function hideResult() {
+  clearTimeout(state.resultTimer);
+  el('result').hidden = true;
 }
 
 const DENIAL_LABELS = {
@@ -169,7 +188,8 @@ function renderVerdict(result) {
       'granted',
       'Проход разрешён',
       result.holder?.fullName,
-      [result.pass?.serial, result.scan?.gate, `код ${result.tokenAge}с`].filter(Boolean).join(' · '),
+      [result.scan?.gate, `код выдан ${result.tokenAge} с назад`].filter(Boolean).join(' · '),
+      result.pass?.serial,
     );
     return;
   }
@@ -177,10 +197,10 @@ function renderVerdict(result) {
   const details = [];
   if (result.holder?.fullName) details.push(result.holder.fullName);
   if (result.previousScan) {
-    details.push(`ранее: ${formatScanTime(result.previousScan.scannedAt)}`);
+    details.push(`прошёл в ${formatScanTime(result.previousScan.scannedAt)}`);
     if (result.previousScan.gate) details.push(result.previousScan.gate);
   }
-  showResult('denied', 'Отказано', label, details.join(' · '));
+  showResult('denied', 'Отказано', label, details.join(' · '), result.pass?.serial);
 }
 
 /** No connectivity: check the signature locally and queue the scan for the server. */
@@ -203,8 +223,9 @@ async function verifyWhileOffline(token, gate) {
   showResult(
     'pending',
     'Подпись верна',
+    'Офлайн-проверка',
+    'Повторное использование здесь не видно — скан уйдёт на сервер',
     `Пропуск #${result.parsed.passId}`,
-    'Офлайн: повторное использование не проверено, скан отправится на сервер',
   );
 }
 
@@ -220,7 +241,7 @@ async function startCamera() {
       audio: false,
     });
     el('scanner-note').textContent = 'Готовим сканер…';
-    state.detector = await createScanner();
+    state.detector = await createScanner(state.formats);
   } catch (error) {
     const denied = error.name === 'NotAllowedError';
     el('scanner-note').textContent = denied
@@ -340,6 +361,7 @@ el('btn-logout').addEventListener('click', async () => {
   showView('auth');
 });
 
+el('result').addEventListener('click', hideResult);
 el('btn-camera').addEventListener('click', startCamera);
 el('btn-stop-camera').addEventListener('click', stopCamera);
 el('btn-manual').addEventListener('click', () => {
@@ -404,6 +426,7 @@ function applyAuthMethods(auth) {
   el('offline-banner').hidden = navigator.onLine;
   try {
     const session = await api.me();
+    state.formats = session.server?.formats || ['qr'];
     applyAuthMethods(session.server?.auth);
     showSsoError(el('sso-error'));
     if (session.user && (session.user.role === 'staff' || session.user.role === 'admin')) {

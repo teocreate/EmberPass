@@ -62,7 +62,7 @@
           <button class="btn btn-ghost" id="btn-manual" type="button">Ввести код</button>
           <span class="pill" id="queue-pill" hidden>В очереди: <b id="queue-count">0</b></span>
         </div>
-        <p class="muted small" id="scanner-note"></p>
+        <p class="muted small scanner-note" id="scanner-note"></p>
       </section>
 
       <section class="card camera-card" id="camera-card" hidden>
@@ -83,10 +83,12 @@
         </form>
       </section>
 
-      <section class="result" id="result" hidden>
+      <section class="result" id="result" role="status" aria-live="assertive" hidden>
         <p class="result-title" id="result-title">—</p>
         <p class="result-name" id="result-name"></p>
+        <p class="result-serial mono" id="result-serial"></p>
         <p class="result-meta" id="result-meta"></p>
+        <p class="result-dismiss">Нажмите, чтобы продолжить</p>
       </section>
 
       <section class="card">

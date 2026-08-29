@@ -1,5 +1,5 @@
 import { api, ApiError } from './lib/api.js';
-import { renderBarcode } from './lib/render.js';
+import { renderBarcode, loadFormat } from './lib/render.js';
 import { setupSso, showSsoError, finishLogout } from './lib/sso.js';
 
 const el = (id) => document.getElementById(id);
@@ -9,6 +9,7 @@ const state = {
   user: null,
   pass: null,
   format: localStorage.getItem('pass.format') === 'pdf417' ? 'pdf417' : 'qr',
+  formats: ['qr'],
   token: null, // { token, issuedAt, expiresAt, ttl, receivedAt }
   refreshTimer: null,
   tickTimer: null,
@@ -167,10 +168,14 @@ function tick() {
   const total = late ? state.token.ttl : state.token.cycle;
   const ratio = Math.max(0, Math.min(1, secondsLeft / total));
 
-  const ring = el('ring-progress');
-  ring.style.strokeDashoffset = String(100.5 * (1 - ratio));
-  ring.classList.toggle('is-low', late || ratio < 0.34);
+  const fill = el('time-fill');
+  fill.style.transform = `scaleX(${ratio})`;
+  fill.classList.toggle('is-low', late || ratio < 0.34);
   el('countdown-value').textContent = String(secondsLeft);
+  const track = el('time-track');
+  track.setAttribute('aria-valuemax', String(total));
+  track.setAttribute('aria-valuenow', String(secondsLeft));
+  track.setAttribute('aria-valuetext', `${secondsLeft} секунд до обновления кода`);
 
   if (late && !state.refreshing) {
     el('token-status').textContent = secondsLeft
@@ -237,7 +242,8 @@ function stopTokenLoop() {
 }
 
 document.querySelectorAll('.switch-btn').forEach((button) => {
-  button.addEventListener('click', () => {
+  button.addEventListener('click', async () => {
+    await loadFormat(button.dataset.format);
     state.format = button.dataset.format;
     localStorage.setItem('pass.format', state.format);
     document.querySelectorAll('.switch-btn').forEach((other) => other.classList.toggle('is-active', other === button));
@@ -355,16 +361,15 @@ async function enterCabinet(user, pass) {
   state.user = user;
   state.pass = pass;
   el('holder-name').textContent = user.fullName;
-  el('holder-role').textContent = user.role === 'user' ? 'Личный кабинет' : `Личный кабинет · ${user.role}`;
+  const roles = { staff: 'сотрудник', admin: 'администратор' };
+  el('holder-role').textContent = roles[user.role] ? `Личный кабинет · ${roles[user.role]}` : 'Личный кабинет';
   showView('cabinet');
-
-  document.querySelectorAll('.switch-btn').forEach((button) =>
-    button.classList.toggle('is-active', button.dataset.format === state.format),
-  );
 
   try {
     const details = await api.pass();
     state.pass = details.pass;
+    state.formats = details.formats || ['qr'];
+    await applyFormats();
     el('pass-serial').textContent = details.pass.serial;
     statusBadge(details.pass);
     renderScans(details.recentScans);
@@ -399,6 +404,22 @@ const CONFIG_WARNINGS = {
   ephemeral_storage: 'база данных не подключена — аккаунты и проходы живут только до перезапуска сервера',
   ephemeral_signing_key: 'ключ подписи не задан — коды перестанут проверяться после перезапуска',
 };
+
+/**
+ * Which code formats this deployment offers. PDF417 is switched off unless a
+ * turnstile with a laser scanner is in play, and then the switch is not shown at all:
+ * one format needs no chooser.
+ */
+async function applyFormats() {
+  const formats = state.formats;
+  if (!formats.includes(state.format)) state.format = formats[0];
+  await loadFormat(state.format);
+  el('format-switch').hidden = formats.length < 2;
+  document.querySelectorAll('.switch-btn').forEach((button) => {
+    button.hidden = !formats.includes(button.dataset.format);
+    button.classList.toggle('is-active', button.dataset.format === state.format);
+  });
+}
 
 /** Shows or hides the password form and the single sign-on button. */
 function applyAuthMethods(auth) {
