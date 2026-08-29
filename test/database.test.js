@@ -153,3 +153,37 @@ test('a chain error distinguishes a missing CA from a wrong one', () => {
   assert.match(withoutCa, /Supply the provider's CA/);
   assert.match(withCa, /does not sign this server's chain/);
 });
+
+/**
+ * Special characters in a password are the most common reason a correct password is
+ * rejected: "@" does not break parsing, it silently moves the split point, and the
+ * server then answers with a plain authentication failure.
+ */
+test('a password needing percent-encoding is caught before it reaches the server', () => {
+  const at = 'postgres://postgres.ref:pa@ss@aws-1.pooler.supabase.com:5432/postgres';
+  assert.throws(() => parseDatabaseUrl(at), /unescaped "@"/);
+
+  const hash = 'postgres://postgres.ref:pa#ss@aws-1.pooler.supabase.com:5432/postgres';
+  assert.throws(() => parseDatabaseUrl(hash), /could not be parsed/);
+  assert.throws(() => parseDatabaseUrl(hash), /%23/, 'names the encoding to use');
+
+  const space = 'postgres://postgres.ref:pass@aws-1.pooler.supabase.com: 5432/postgres';
+  assert.throws(() => parseDatabaseUrl(space), /could not be parsed|space/);
+
+  assert.throws(
+    () => parseDatabaseUrl('postgres://postgres.ref@aws-1.pooler.supabase.com:5432/postgres'),
+    /has no password/,
+  );
+
+  // Properly encoded, the same password goes through untouched.
+  const encoded = parseDatabaseUrl('postgres://postgres.ref:pa%40ss%23word@aws-1.pooler.supabase.com:5432/postgres');
+  assert.equal(encoded.user, 'postgres.ref');
+  assert.equal(encoded.passwordLength, 'pa@ss#word'.length);
+});
+
+test('a rejected password reports how long the one sent was', () => {
+  const target = { host: 'h', port: '5432', database: 'postgres', user: 'postgres.ref', passwordLength: 12 };
+  const message = describeConnectionError({ code: '28P01' }, target);
+  assert.match(message, /12 characters were sent/, 'a truncated password shows up as a wrong length');
+  assert.match(message, /database password, not the account password/);
+});

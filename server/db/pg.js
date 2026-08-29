@@ -43,9 +43,17 @@ export function parseDatabaseUrl(databaseUrl) {
   try {
     url = new URL(databaseUrl);
   } catch {
-    const head = String(databaseUrl).trim().slice(0, 24);
+    const value = String(databaseUrl).trim();
+    // A string that already looks like a connection URL but will not parse is
+    // almost always a password with a character that needs percent-encoding.
+    if (/^postgres(ql)?:\/\//i.test(value)) {
+      throw new Error(
+        'DATABASE_URL could not be parsed. A password containing @ : / ? # or a space breaks it - ' +
+          'percent-encode those characters (@ as %40, : as %3A, / as %2F, ? as %3F, # as %23, space as %20).',
+      );
+    }
     throw new Error(
-      `DATABASE_URL is not a connection URL (starts with "${head}"). Expected ${expected} - ` +
+      `DATABASE_URL is not a connection URL (starts with "${value.slice(0, 24)}"). Expected ${expected} - ` +
         'not a psql command line and not the example from .env.example.',
     );
   }
@@ -56,12 +64,37 @@ export function parseDatabaseUrl(databaseUrl) {
   if (/[[\]]/.test(decodeURIComponent(url.password || ''))) {
     throw new Error('DATABASE_URL still contains the [YOUR-PASSWORD] placeholder - put the real database password there.');
   }
+  if (!url.password) throw new Error(`DATABASE_URL has no password. Expected ${expected}`);
+
+  // An unencoded "@" does not fail to parse: the URL splits at the *last* one, so the
+  // user and password silently become something else and the server answers with a
+  // plain "password authentication failed". Catch it here instead.
+  const authority = String(databaseUrl).trim().split('://')[1]?.split('/')[0] ?? '';
+  const userinfo = authority.slice(0, authority.lastIndexOf('@'));
+  if (userinfo.includes('@')) {
+    throw new Error(
+      'DATABASE_URL has an unescaped "@" in the user or password, so the string splits in the wrong place. ' +
+        'Percent-encode it as %40.',
+    );
+  }
+  if (/\s/.test(String(databaseUrl).trim())) {
+    throw new Error('DATABASE_URL contains a space. Percent-encode it as %20, or remove it if it was a stray one.');
+  }
+  if (url.hash) {
+    // Everything after an unescaped '#' is a URL fragment, so the password was cut
+    // short there and the rest of the string was silently dropped.
+    throw new Error(
+      'DATABASE_URL contains an unescaped "#", so the password was cut off at it. ' +
+        'Percent-encode it as %23 (and @ as %40, : as %3A, / as %2F, ? as %3F).',
+    );
+  }
 
   return {
     host: url.hostname,
     port: url.port || '5432',
     database: url.pathname.replace(/^\//, '') || 'postgres',
     user: decodeURIComponent(url.username || ''),
+    passwordLength: decodeURIComponent(url.password).length,
   };
 }
 
@@ -83,7 +116,11 @@ export function describeConnectionError(error, target) {
     case 'ETIMEDOUT':
       return `${where} did not answer in time - a firewall or the wrong port.`;
     case '28P01':
-      return `the password for user "${target.user}" was rejected by ${where}.`;
+      // Supavisor strips the project suffix, so its own message names plain
+      // "postgres" - that mismatch is normal and not the problem.
+      return `the password for user "${target.user}" was rejected by ${where} ` +
+        `(${target.passwordLength} characters were sent). It must be the database password, not the account ` +
+        'password; reset it in the provider dashboard if unsure. Percent-encode @ : / ? # and spaces in it.';
     case '3D000':
       return `database "${target.database}" does not exist on ${where}.`;
     case 'SELF_SIGNED_CERT_IN_CHAIN':
