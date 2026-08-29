@@ -1,5 +1,5 @@
 /* Service worker for the holder app: cache the shell, never cache the API. */
-const CACHE = 'pass-shell-v1';
+const CACHE = 'pass-shell-v2';
 const SHELL = [
   '/',
   '/index.html',
@@ -7,6 +7,7 @@ const SHELL = [
   '/app.js',
   '/lib/api.js',
   '/lib/render.js',
+  '/lib/sso.js',
   '/lib/qrcode.js',
   '/lib/pdf417.js',
   '/lib/pdf417-codes.js',

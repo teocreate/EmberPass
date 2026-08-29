@@ -29,7 +29,7 @@ export function createMemoryStore() {
 
     async close() {},
 
-    async createUser({ email, passwordHash, fullName, role = 'user' }) {
+    async createUser({ email, passwordHash = null, fullName, role = 'user', authSource = 'local', oidcSub = null }) {
       if (usersByEmail.has(email)) {
         const error = new Error('duplicate email');
         error.code = '23505';
@@ -42,6 +42,8 @@ export function createMemoryStore() {
         fullName,
         role,
         status: 'active',
+        authSource,
+        oidcSub,
         createdAt: new Date(),
         lastLoginAt: null,
       };
@@ -56,6 +58,21 @@ export function createMemoryStore() {
 
     async findUserById(id) {
       return clone(users.get(id));
+    },
+
+    async findUserByOidcSub(sub) {
+      for (const user of users.values()) if (sub && user.oidcSub === sub) return clone(user);
+      return null;
+    },
+
+    async updateUserFromProvider(userId, { oidcSub, fullName, role, authSource }) {
+      const user = users.get(userId);
+      if (!user) return null;
+      if (oidcSub !== undefined && oidcSub !== null) user.oidcSub = oidcSub;
+      if (fullName) user.fullName = fullName;
+      if (role) user.role = role;
+      if (authSource) user.authSource = authSource;
+      return clone(user);
     },
 
     async touchLogin(userId) {
@@ -93,8 +110,8 @@ export function createMemoryStore() {
       return clone(pass);
     },
 
-    async createSession({ tokenHash, userId, expiresAt, userAgent, ip }) {
-      sessions.set(key(tokenHash), { userId, expiresAt, userAgent, ip });
+    async createSession({ tokenHash, userId, expiresAt, userAgent, ip, idToken = null }) {
+      sessions.set(key(tokenHash), { userId, expiresAt, userAgent, ip, idToken });
     },
 
     async findSession(tokenHash) {
@@ -104,7 +121,7 @@ export function createMemoryStore() {
         sessions.delete(key(tokenHash));
         return null;
       }
-      return { userId: session.userId, expiresAt: session.expiresAt };
+      return { userId: session.userId, expiresAt: session.expiresAt, idToken: session.idToken ?? null };
     },
 
     async deleteSession(tokenHash) {

@@ -14,6 +14,7 @@ import {
   handleGetPass, handleIssueToken, handleHistory, handlePublicKey,
 } from './routes/pass.js';
 import { handleVerify, handleRecentScans } from './routes/staff.js';
+import { handleOidcStart, handleOidcCallback } from './routes/oidc.js';
 
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), '../public');
 
@@ -23,6 +24,8 @@ const ROUTES = [
   ['POST', '/api/auth/logout', handleLogout],
   ['POST', '/api/auth/check-email', handleCheckEmail],
   ['GET', '/api/auth/me', handleMe],
+  ['GET', '/api/auth/oidc/start', handleOidcStart],
+  ['GET', '/api/auth/oidc/callback', handleOidcCallback],
   ['GET', '/api/pass', handleGetPass],
   ['POST', '/api/pass/token', handleIssueToken],
   ['GET', '/api/pass/history', handleHistory],
@@ -40,7 +43,8 @@ const SECURITY_HEADERS = {
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'",
 };
 
-export async function createApp() {
+/** Builds the shared application context: storage, signing key and rate limiters. */
+export async function createContext() {
   const store = await getStore();
   const signer = new PassSigner(loadSigningKey());
   const limiters = {
@@ -51,14 +55,26 @@ export async function createApp() {
     verify: new RateLimiter({ limit: 600, windowMs: 60 * 1000 }),
   };
 
-  const ctx = {
+  const warnings = [];
+  if (store.kind === 'memory') warnings.push('ephemeral_storage');
+  if (config.serverless && !process.env.SIGNING_KEY) warnings.push('ephemeral_signing_key');
+
+  return {
     store,
     signer,
     limiters,
+    warnings,
     log: (message, fields = {}) => console.log(`[app] ${message}`, JSON.stringify(fields)),
   };
+}
 
-  const server = createServer(async (req, res) => {
+/**
+ * The request handler, shared by the standalone server and the serverless entry
+ * point in api/index.js. `serveFiles` is off on platforms that put a CDN in front
+ * of `public/` and only route /api/* here.
+ */
+export function createRequestHandler(ctx, { serveFiles = true } = {}) {
+  return async (req, res) => {
     for (const [header, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(header, value);
     const { pathname } = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
@@ -73,7 +89,7 @@ export async function createApp() {
           : new HttpError(404, 'not_found', 'no such endpoint');
       }
 
-      if (req.method === 'GET' || req.method === 'HEAD') {
+      if (serveFiles && (req.method === 'GET' || req.method === 'HEAD')) {
         if (await serveStatic(req, res, publicDir, pathname)) return;
         // Unknown paths fall back to the matching app shell.
         const shell = pathname.startsWith('/staff') ? '/staff/index.html' : '/index.html';
@@ -83,7 +99,13 @@ export async function createApp() {
     } catch (error) {
       sendError(res, error);
     }
-  });
+  };
+}
+
+export async function createApp() {
+  const ctx = await createContext();
+  const { limiters, store } = ctx;
+  const server = createServer(createRequestHandler(ctx));
 
   const sweeper = setInterval(() => {
     Object.values(limiters).forEach((limiter) => limiter.sweep());

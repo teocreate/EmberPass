@@ -20,7 +20,21 @@ async function request(method, path, body) {
     throw new ApiError(0, 'network_error', 'нет соединения с сервером');
   }
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      // A proxy or a misconfigured deployment answering instead of the API.
+      throw new ApiError(
+        response.status,
+        'bad_response',
+        response.ok
+          ? 'сервер вернул неожиданный ответ'
+          : `API недоступно (ответ ${response.status} от ${path})`,
+      );
+    }
+  }
   if (!response.ok) throw new ApiError(response.status, payload.error || 'error', payload.message || 'ошибка запроса');
   return payload;
 }

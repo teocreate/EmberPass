@@ -2,11 +2,13 @@ import { HttpError, sendJson, clientIp } from '../lib/http.js';
 import { requireUser, publicPass } from './auth.js';
 import { config } from '../config.js';
 
+const PASS_STATUS = { suspended: 'пропуск приостановлен', revoked: 'пропуск аннулирован' };
+
 /** The holder's own pass, plus where it was last used. */
 export async function handleGetPass(ctx, req, res) {
   const user = await requireUser(ctx, req);
   const pass = await ctx.store.findPassByUserId(user.id);
-  if (!pass) throw new HttpError(404, 'no_pass', 'this account has no pass');
+  if (!pass) throw new HttpError(404, 'no_pass', 'к аккаунту не привязан пропуск');
   const scans = await ctx.store.listScansForPass(pass.id, 10);
   sendJson(res, 200, {
     pass: publicPass(pass),
@@ -24,18 +26,18 @@ export async function handleGetPass(ctx, req, res) {
 export async function handleIssueToken(ctx, req, res) {
   const user = await requireUser(ctx, req);
   const limit = ctx.limiters.token.check(`${user.id}`);
-  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `slow down, retry in ${limit.retryAfter}s`);
+  if (!limit.allowed) throw new HttpError(429, 'rate_limited', `слишком часто, повторите через ${limit.retryAfter} с`);
 
   const pass = await ctx.store.findPassByUserId(user.id);
-  if (!pass) throw new HttpError(404, 'no_pass', 'this account has no pass');
-  if (pass.status !== 'active') throw new HttpError(403, 'pass_' + pass.status, `pass is ${pass.status}`);
+  if (!pass) throw new HttpError(404, 'no_pass', 'к аккаунту не привязан пропуск');
+  if (pass.status !== 'active') throw new HttpError(403, 'pass_' + pass.status, PASS_STATUS[pass.status] || `пропуск: ${pass.status}`);
 
   const now = Date.now();
   if (pass.validUntil && new Date(pass.validUntil).getTime() < now) {
-    throw new HttpError(403, 'pass_expired', 'pass validity period has ended');
+    throw new HttpError(403, 'pass_expired', 'срок действия пропуска истёк');
   }
   if (pass.validFrom && new Date(pass.validFrom).getTime() > now) {
-    throw new HttpError(403, 'pass_not_active_yet', 'pass is not valid yet');
+    throw new HttpError(403, 'pass_not_active_yet', 'пропуск ещё не активен');
   }
 
   const issued = ctx.signer.issue({ passId: pass.id, userId: user.id, ttl: config.passTokenTtl });
@@ -53,7 +55,7 @@ export async function handleIssueToken(ctx, req, res) {
 export async function handleHistory(ctx, req, res) {
   const user = await requireUser(ctx, req);
   const pass = await ctx.store.findPassByUserId(user.id);
-  if (!pass) throw new HttpError(404, 'no_pass', 'this account has no pass');
+  if (!pass) throw new HttpError(404, 'no_pass', 'к аккаунту не привязан пропуск');
   const scans = await ctx.store.listScansForPass(pass.id, 50);
   sendJson(res, 200, { scans: scans.map(publicScan) });
 }

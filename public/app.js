@@ -1,5 +1,6 @@
 import { api, ApiError } from './lib/api.js';
 import { renderBarcode } from './lib/render.js';
+import { setupSso, showSsoError, finishLogout } from './lib/sso.js';
 
 const el = (id) => document.getElementById(id);
 const views = { auth: el('view-auth'), cabinet: el('view-cabinet') };
@@ -109,10 +110,12 @@ el('form-register').elements.email.addEventListener('input', (event) => {
 
 el('btn-logout').addEventListener('click', async () => {
   stopTokenLoop();
-  await api.logout().catch(() => {});
+  const result = await api.logout().catch(() => null);
   state.user = null;
   state.pass = null;
   state.token = null;
+  // With single sign-on the provider session outlives the local one; let it end too.
+  if (finishLogout(result)) return;
   showView('auth');
 });
 
@@ -302,10 +305,45 @@ window.addEventListener('offline', () => {
   el('offline-banner').hidden = false;
 });
 
+const CONFIG_WARNINGS = {
+  ephemeral_storage: 'база данных не подключена — аккаунты и проходы живут только до перезапуска сервера',
+  ephemeral_signing_key: 'ключ подписи не задан — коды перестанут проверяться после перезапуска',
+};
+
+/** Shows or hides the password form and the single sign-on button. */
+function applyAuthMethods(auth) {
+  if (!auth) return;
+  setupSso({
+    auth,
+    next: '/',
+    elements: {
+      block: el('sso-block'),
+      button: el('btn-sso'),
+      name: el('sso-name'),
+      divider: el('sso-divider'),
+      error: el('sso-error'),
+    },
+  });
+  document.querySelector('.tabs').hidden = !auth.local;
+  el('form-login').hidden = !auth.local;
+  if (!auth.local) el('form-register').hidden = true;
+  document.querySelector('.tab[data-tab="register"]').hidden = !auth.registration;
+}
+
+function showConfigWarnings(server) {
+  const messages = (server?.warnings || []).map((code) => CONFIG_WARNINGS[code]).filter(Boolean);
+  const banner = el('config-banner');
+  banner.hidden = messages.length === 0;
+  banner.textContent = messages.length ? `Демо-режим: ${messages.join('; ')}` : '';
+}
+
 (async function boot() {
   el('offline-banner').hidden = navigator.onLine;
   try {
     const session = await api.me();
+    showConfigWarnings(session.server);
+    applyAuthMethods(session.server?.auth);
+    showSsoError(el('sso-error'));
     if (session.user) {
       await enterCabinet(session.user, session.pass);
     } else {

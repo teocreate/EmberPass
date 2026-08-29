@@ -12,11 +12,21 @@
   </head>
   <body>
     <div id="offline-banner" class="banner" hidden>Нет сети — показан последний код</div>
+    <div id="config-banner" class="banner banner-info" hidden></div>
 
     <main id="view-auth" class="view auth" hidden>
       <div class="card auth-card">
         <h1 class="brand">Пропуск</h1>
         <p class="muted">Личный кабинет и динамический пропуск</p>
+
+        <p class="form-error" id="sso-error" hidden></p>
+
+        <div id="sso-block" hidden>
+          <button class="btn btn-primary btn-sso" id="btn-sso" type="button">
+            Войти через <span id="sso-name">SSO</span>
+          </button>
+          <p class="divider" id="sso-divider"><span>или по паролю</span></p>
+        </div>
 
         <div class="tabs" role="tablist">
           <button class="tab is-active" data-tab="login" role="tab" type="button">Вход</button>

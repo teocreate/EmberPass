@@ -18,6 +18,15 @@
       <div class="card auth-card">
         <h1 class="brand">Проверка пропусков</h1>
         <p class="muted">Вход для сотрудников</p>
+        <p class="form-error" id="sso-error" hidden></p>
+
+        <div id="sso-block" hidden>
+          <button class="btn btn-primary btn-sso" id="btn-sso" type="button">
+            Войти через <span id="sso-name">SSO</span>
+          </button>
+          <p class="divider" id="sso-divider"><span>или по паролю</span></p>
+        </div>
+
         <form id="form-login" class="form" novalidate>
           <label class="field">
             <span>Email</span>
