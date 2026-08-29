@@ -103,3 +103,30 @@ test('a connection string is never logged with its password', () => {
   assert.ok(!redacted.includes('sup3r-s3cret'));
   assert.match(redacted, /postgres\.ref:\*\*\*@aws-0-eu\.pooler\.supabase\.com/);
 });
+
+test('the CA certificate may be given as PEM or as base64', async () => {
+  const pem = '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n';
+  const original = process.env.DATABASE_CA_CERT;
+  const load = async () => {
+    // config is read once per process, so exercise the reader directly
+    const { readCaCertForTest } = await import('../server/config.js');
+    return readCaCertForTest(process.env.DATABASE_CA_CERT);
+  };
+  try {
+    process.env.DATABASE_CA_CERT = pem;
+    assert.equal(await load(), pem.trim(), 'surrounding whitespace is stripped');
+
+    // A one-line value survives a hosting dashboard where a multi-line one may not.
+    process.env.DATABASE_CA_CERT = Buffer.from(pem).toString('base64');
+    assert.equal(await load(), pem.trim());
+
+    process.env.DATABASE_CA_CERT = '';
+    assert.equal(await load(), '');
+
+    process.env.DATABASE_CA_CERT = 'not-a-certificate';
+    await assert.rejects(async () => load(), /must be a PEM certificate/);
+  } finally {
+    if (original === undefined) delete process.env.DATABASE_CA_CERT;
+    else process.env.DATABASE_CA_CERT = original;
+  }
+});

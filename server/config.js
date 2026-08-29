@@ -32,6 +32,17 @@ const bool = (name, fallback) => {
   return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
 };
 
+export { readCaCert as readCaCertForTest };
+
+function readCaCert(raw) {
+  const value = (raw || '').trim();
+  if (!value) return '';
+  if (value.includes('-----BEGIN CERTIFICATE-----')) return value;
+  const decoded = Buffer.from(value, 'base64').toString('utf8');
+  if (decoded.includes('-----BEGIN CERTIFICATE-----')) return decoded;
+  throw new Error('DATABASE_CA_CERT must be a PEM certificate, or that certificate encoded as base64');
+}
+
 // Vercel and similar platforms run the app on a read-only filesystem behind HTTPS.
 const serverless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 
@@ -45,8 +56,10 @@ export const config = {
   // TLS for the database connection: auto (on for every host but localhost),
   // require, no-verify (accept a self-signed chain), verify-full, or disable.
   databaseSsl: (process.env.DATABASE_SSL || 'auto').toLowerCase(),
-  // PEM of the provider's CA, so verification can stay on with a private chain.
-  databaseCaCert: process.env.DATABASE_CA_CERT || '',
+  // The provider's CA, so verification can stay on with a private chain. Accepts a
+  // PEM or that PEM in base64, because a one-line value survives copy-paste into a
+  // hosting dashboard where a multi-line one often does not.
+  databaseCaCert: readCaCert(process.env.DATABASE_CA_CERT),
   // Serverless instances each hold their own pool, so they must stay small.
   databasePoolMax: int('DATABASE_POOL_MAX', serverless ? 2 : 10),
   keyFile: process.env.SIGNING_KEY_FILE || resolve(process.cwd(), 'data/signing-key.json'),
