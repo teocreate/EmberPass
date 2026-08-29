@@ -207,6 +207,8 @@ function describeEmailReason(reason) {
       return 'это не похоже на адрес электронной почты';
     case 'disposable_domain':
       return 'одноразовые адреса не принимаются';
+    case 'reserved_domain':
+      return 'этот домен зарезервирован для примеров и не принимает почту';
     case 'no_mx_record':
       return 'этот домен не принимает почту';
     default:

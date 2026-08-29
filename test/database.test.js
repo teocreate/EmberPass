@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.DATABASE_URL = '';
-const { resolveSsl, parseDatabaseUrl, describeConnectionError, redactUrl } = await import('../server/db/pg.js');
+const { resolveSsl, parseDatabaseUrl, describeConnectionError, redactUrl, describeTls } =
+  await import('../server/db/pg.js');
 
 /**
  * node-postgres connects in the clear unless told otherwise, and reads `require`
@@ -74,14 +75,16 @@ test('a valid connection string yields the target for diagnostics', () => {
   const target = parseDatabaseUrl('postgres://postgres.ref:s3cret@aws-0-eu-central-1.pooler.supabase.com:5432/postgres');
   assert.deepEqual(target, {
     host: 'aws-0-eu-central-1.pooler.supabase.com',
-    port: '5432',
+    port: 5432,
     database: 'postgres',
     user: 'postgres.ref',
+    passwordLength: 's3cret'.length,
+    options: undefined,
   });
   // Defaults match libpq: port 5432, database postgres.
-  assert.equal(parseDatabaseUrl('postgres://user@host/').port, '5432');
-  assert.equal(parseDatabaseUrl('postgres://user@host/').database, 'postgres');
-  assert.equal(parseDatabaseUrl('postgresql://user@host/app').database, 'app');
+  assert.equal(parseDatabaseUrl('postgres://user:pw@host/').port, 5432);
+  assert.equal(parseDatabaseUrl('postgres://user:pw@host/').database, 'postgres');
+  assert.equal(parseDatabaseUrl('postgresql://user:pw@host/app').database, 'app');
 });
 
 test('connection failures name the likely cause', () => {
@@ -102,4 +105,121 @@ test('a connection string is never logged with its password', () => {
   const redacted = redactUrl(url);
   assert.ok(!redacted.includes('sup3r-s3cret'));
   assert.match(redacted, /postgres\.ref:\*\*\*@aws-0-eu\.pooler\.supabase\.com/);
+});
+
+test('the CA certificate may be given as PEM or as base64', async () => {
+  const pem = '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----\n';
+  const original = process.env.DATABASE_CA_CERT;
+  const load = async () => {
+    // config is read once per process, so exercise the reader directly
+    const { readCaCertForTest } = await import('../server/config.js');
+    return readCaCertForTest(process.env.DATABASE_CA_CERT);
+  };
+  try {
+    process.env.DATABASE_CA_CERT = pem;
+    assert.equal(await load(), pem.trim(), 'surrounding whitespace is stripped');
+
+    // A one-line value survives a hosting dashboard where a multi-line one may not.
+    process.env.DATABASE_CA_CERT = Buffer.from(pem).toString('base64');
+    assert.equal(await load(), pem.trim());
+
+    process.env.DATABASE_CA_CERT = '';
+    assert.equal(await load(), '');
+
+    process.env.DATABASE_CA_CERT = 'not-a-certificate';
+    await assert.rejects(async () => load(), /must be a PEM certificate/);
+  } finally {
+    if (original === undefined) delete process.env.DATABASE_CA_CERT;
+    else process.env.DATABASE_CA_CERT = original;
+  }
+});
+
+test('the startup line says which trust anchor is in use', async () => {
+  const { generateKeyPairSync, X509Certificate } = await import('node:crypto');
+  void generateKeyPairSync;
+  void X509Certificate;
+
+  assert.equal(describeTls(false), 'off');
+  assert.equal(describeTls({ rejectUnauthorized: false }), 'on, chain not verified');
+  assert.equal(describeTls({ rejectUnauthorized: true }), 'on, verified against system roots');
+  // A CA that cannot be read must say so rather than claim verification is set up.
+  assert.match(describeTls({ ca: 'not a certificate', rejectUnauthorized: true }), /could not be read/);
+});
+
+test('a chain error distinguishes a missing CA from a wrong one', () => {
+  const target = { host: 'db.example.com', port: '5432', database: 'postgres', user: 'u' };
+  const withoutCa = describeConnectionError({ code: 'SELF_SIGNED_CERT_IN_CHAIN' }, target);
+  const withCa = describeConnectionError({ code: 'SELF_SIGNED_CERT_IN_CHAIN' }, { ...target, hasCa: true });
+
+  assert.match(withoutCa, /against the system roots/);
+  assert.match(withoutCa, /Supply the provider's CA/);
+  assert.match(withCa, /does not sign this server's chain/);
+});
+
+/**
+ * Special characters in a password are the most common reason a correct password is
+ * rejected: "@" does not break parsing, it silently moves the split point, and the
+ * server then answers with a plain authentication failure.
+ */
+test('a password needing percent-encoding is caught before it reaches the server', () => {
+  const at = 'postgres://postgres.ref:pa@ss@aws-1.pooler.supabase.com:5432/postgres';
+  assert.throws(() => parseDatabaseUrl(at), /unescaped "@"/);
+
+  const hash = 'postgres://postgres.ref:pa#ss@aws-1.pooler.supabase.com:5432/postgres';
+  assert.throws(() => parseDatabaseUrl(hash), /could not be parsed/);
+  assert.throws(() => parseDatabaseUrl(hash), /%23/, 'names the encoding to use');
+
+  const space = 'postgres://postgres.ref:pass@aws-1.pooler.supabase.com: 5432/postgres';
+  assert.throws(() => parseDatabaseUrl(space), /could not be parsed|space/);
+
+  assert.throws(
+    () => parseDatabaseUrl('postgres://postgres.ref@aws-1.pooler.supabase.com:5432/postgres'),
+    /has no password/,
+  );
+
+  // Properly encoded, the same password goes through untouched.
+  const encoded = parseDatabaseUrl('postgres://postgres.ref:pa%40ss%23word@aws-1.pooler.supabase.com:5432/postgres');
+  assert.equal(encoded.user, 'postgres.ref');
+  assert.equal(encoded.passwordLength, 'pa@ss#word'.length);
+});
+
+test('a rejected password reports how long the one sent was', () => {
+  const target = { host: 'h', port: '5432', database: 'postgres', user: 'postgres.ref', passwordLength: 12 };
+  const message = describeConnectionError({ code: '28P01' }, target);
+  assert.match(message, /12 characters were sent/, 'a truncated password shows up as a wrong length');
+  assert.match(message, /database password, not the account password/);
+});
+
+test('a pasted shell command is reported as such, not as a bad URL', () => {
+  const pasted = 'DATABASE_URL="postgres://postgres.ref:pw@aws-1.pooler.supabase.com:5432/postgres" npm run dbcheck';
+  assert.throws(() => parseDatabaseUrl(pasted), /contains the assignment "DATABASE_URL=\.\.\."/);
+  assert.throws(() => parseDatabaseUrl(pasted), /no variable name, no quotes, no trailing command/);
+});
+
+/**
+ * pg parses a connection string with its own rules, so a value that looks clean to
+ * these checks could still reach the server with whitespace inside the database
+ * name. The parsed fields are what gets connected with, and they are normalised.
+ */
+test('stray whitespace never reaches the server', () => {
+  const target = parseDatabaseUrl('postgres://pass:secret@localhost:5432/appdb \n');
+  assert.equal(target.database, 'appdb');
+  assert.equal(target.host, 'localhost');
+  assert.equal(target.port, 5432);
+  assert.equal(target.user, 'pass');
+});
+
+test('the password travels with the target but not into logs', () => {
+  const target = parseDatabaseUrl('postgres://pass:s3cret@localhost:5432/appdb');
+  assert.equal(target.password, 's3cret', 'available to the driver');
+  assert.equal(Object.keys(target).includes('password'), false, 'not enumerable');
+  assert.ok(!JSON.stringify(target).includes('s3cret'), 'cannot leak through serialisation');
+  assert.equal(target.passwordLength, 6);
+});
+
+test('percent-encoded parts are decoded once, for the driver', () => {
+  const target = parseDatabaseUrl('postgres://post%40gres:pa%40ss%23word@host:5432/my%20db');
+  assert.equal(target.user, 'post@gres');
+  assert.equal(target.password, 'pa@ss#word');
+  assert.equal(target.database, 'my db');
 });

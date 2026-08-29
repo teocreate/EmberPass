@@ -220,6 +220,22 @@ test('duplicate registrations are refused', async (t) => {
   assert.equal(second.body.error, 'email_taken');
 });
 
+test('quotes around a pasted value do not break it', async () => {
+  const { loadSigningKey, generateSigningKey } = await import('../server/config.js');
+  const original = process.env.SIGNING_KEY;
+  try {
+    // Hosting dashboards keep the quotes when a whole .env line is pasted in.
+    const key = Buffer.from(JSON.stringify(generateSigningKey())).toString('base64');
+    for (const value of [key, `"${key}"`, `'${key}'`, `  ${key}  `]) {
+      process.env.SIGNING_KEY = value;
+      assert.equal(loadSigningKey().source, 'env', `value form: ${value.slice(0, 3)}...`);
+    }
+  } finally {
+    if (original === undefined) delete process.env.SIGNING_KEY;
+    else process.env.SIGNING_KEY = original;
+  }
+});
+
 test('a SIGNING_KEY that is not a key says so plainly', async () => {
   const { loadSigningKey } = await import('../server/config.js');
   const original = process.env.SIGNING_KEY;

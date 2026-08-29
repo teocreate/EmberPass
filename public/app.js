@@ -40,7 +40,17 @@ function overlay(text, { retry = false } = {}) {
   el('barcode').classList.add('is-stale');
 }
 
-const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+/** Today shows as a time, anything older gets a short date - a full timestamp
+ * wraps onto two lines on a phone and pulls the row out of alignment. */
+function formatScanTime(value) {
+  const date = new Date(value);
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  return sameDay
+    ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
 
 /* --------------------------------- auth flow -------------------------------- */
 
@@ -137,15 +147,37 @@ function drawToken() {
       : `PDF417 ${info.version} · для сканеров на турникете`;
 }
 
+/**
+ * The code on screen is replaced well before its token expires, so counting down to
+ * the expiry would show the code changing with a third of the ring still to go. The
+ * ring counts to the replacement instead - zero is the moment the code changes.
+ *
+ * If a refresh is late (no network, say), the ring switches to the token's real
+ * lifetime: the code stays valid and scannable until then, and that is what the
+ * holder needs to know at that point.
+ */
 function tick() {
   if (!state.token) return;
-  const secondsLeft = Math.max(0, state.token.expiresAt - Math.floor(Date.now() / 1000) + state.token.skew);
-  const ratio = Math.max(0, Math.min(1, secondsLeft / state.token.ttl));
+  const now = Date.now() / 1000;
+  const untilRefresh = state.token.refreshDueAt - now;
+  const untilExpiry = state.token.expiresAt - now + state.token.skew;
+  const late = untilRefresh <= 0;
+
+  const secondsLeft = Math.max(0, Math.ceil(late ? untilExpiry : untilRefresh));
+  const total = late ? state.token.ttl : state.token.cycle;
+  const ratio = Math.max(0, Math.min(1, secondsLeft / total));
+
   const ring = el('ring-progress');
   ring.style.strokeDashoffset = String(100.5 * (1 - ratio));
-  ring.classList.toggle('is-low', ratio < 0.34);
+  ring.classList.toggle('is-low', late || ratio < 0.34);
   el('countdown-value').textContent = String(secondsLeft);
-  if (secondsLeft === 0 && !state.refreshing) overlay('Код устарел', { retry: true });
+
+  if (late && !state.refreshing) {
+    el('token-status').textContent = secondsLeft
+      ? `Обновление задерживается — код годен ещё ${secondsLeft} с`
+      : 'Код устарел';
+    if (!secondsLeft) overlay('Код устарел', { retry: true });
+  }
 }
 
 async function refreshToken({ silent = false } = {}) {
@@ -157,7 +189,10 @@ async function refreshToken({ silent = false } = {}) {
     // Trust the server clock: phones drift, and a drifted phone would show a
     // countdown that disagrees with what the scanner sees.
     const skew = issued.serverTime - Math.floor(Date.now() / 1000);
-    state.token = { ...issued, skew };
+    // refreshDueAt runs on the browser's clock, the same one the timer below uses, so
+    // the ring and the actual replacement cannot drift apart.
+    const cycle = Math.max(2, Math.min(issued.refreshEvery, issued.ttl));
+    state.token = { ...issued, skew, cycle, refreshDueAt: Date.now() / 1000 + cycle };
     drawToken();
     overlay('');
     el('token-status').textContent = 'Код действителен';
@@ -170,6 +205,8 @@ async function refreshToken({ silent = false } = {}) {
         : error.message || 'Не удалось обновить код';
     el('token-status').textContent = message;
     overlay(message, { retry: true });
+    // A refresh that did not happen means the ring should show the real lifetime left.
+    if (state.token) state.token.refreshDueAt = Date.now() / 1000;
     if (error instanceof ApiError && error.status === 401) {
       stopTokenLoop();
       showView('auth');
@@ -210,9 +247,62 @@ document.querySelectorAll('.switch-btn').forEach((button) => {
 
 el('btn-refresh').addEventListener('click', () => refreshToken());
 el('btn-retry').addEventListener('click', () => refreshToken());
-el('btn-bright').addEventListener('click', () => {
-  document.body.classList.toggle('is-bright');
-  el('btn-bright').textContent = document.body.classList.contains('is-bright') ? 'Обычно' : 'Ярче';
+/**
+ * Screen brightness is not something a web page can set - that needs a native app.
+ * What helps a scanner is a big, maximally contrasty code that the screen will not
+ * dim away from under it, so this mode enlarges the code, drops everything else, and
+ * holds a wake lock where the browser supports one.
+ */
+let wakeLock = null;
+
+async function enterCodeFullscreen() {
+  document.body.classList.add('is-code-fullscreen');
+  el('btn-bright').textContent = 'Свернуть';
+
+  const hint = document.createElement('p');
+  hint.className = 'fullscreen-hint';
+  hint.id = 'fullscreen-hint';
+  hint.textContent = 'Нажмите, чтобы выйти';
+  document.body.appendChild(hint);
+  document.body.addEventListener('click', exitOnTap, true);
+
+  // Both are best-effort: iOS Safari refuses fullscreen for anything but video, and
+  // older browsers have no wake lock at all. Neither failure matters here.
+  document.documentElement.requestFullscreen?.().catch(() => {});
+  try {
+    wakeLock = (await navigator.wakeLock?.request('screen')) ?? null;
+  } catch {
+    wakeLock = null;
+  }
+}
+
+function exitCodeFullscreen() {
+  document.body.classList.remove('is-code-fullscreen');
+  el('btn-bright').textContent = 'Во весь экран';
+  el('fullscreen-hint')?.remove();
+  document.body.removeEventListener('click', exitOnTap, true);
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  wakeLock?.release?.().catch(() => {});
+  wakeLock = null;
+}
+
+function exitOnTap(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  exitCodeFullscreen();
+}
+
+el('btn-bright').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (document.body.classList.contains('is-code-fullscreen')) exitCodeFullscreen();
+  else enterCodeFullscreen();
+});
+
+// A wake lock is dropped when the page is hidden; take it again on return.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && document.body.classList.contains('is-code-fullscreen') && !wakeLock) {
+    navigator.wakeLock?.request('screen').then((lock) => { wakeLock = lock; }).catch(() => {});
+  }
 });
 
 /* --------------------------------- history ---------------------------------- */
@@ -237,7 +327,7 @@ function renderScans(scans) {
       left.append(result, meta);
       const time = document.createElement('p');
       time.className = 'muted small';
-      time.textContent = dateFormat.format(new Date(scan.scannedAt));
+      time.textContent = formatScanTime(scan.scannedAt);
       item.append(left, time);
       return item;
     }),

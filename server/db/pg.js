@@ -1,12 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { X509Certificate } from 'node:crypto';
 
 import { config } from '../config.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '']);
+
+/** Names the trust anchor in use, so the log says whether DATABASE_CA_CERT arrived. */
+export function describeTls(ssl) {
+  if (!ssl) return 'off';
+  const verified = ssl.rejectUnauthorized !== false;
+  if (!verified) return 'on, chain not verified';
+  if (!ssl.ca) return 'on, verified against system roots';
+  try {
+    const subject = new X509Certificate(ssl.ca).subject;
+    const cn = /CN=(.+)/.exec(subject)?.[1]?.trim() || subject.replace(/\n/g, ' ');
+    return `on, verified against DATABASE_CA_CERT (${cn})`;
+  } catch {
+    return 'on, but DATABASE_CA_CERT could not be read as a certificate';
+  }
+}
 
 /** A connection string with the password replaced, safe to print in a log. */
 export function redactUrl(databaseUrl) {
@@ -27,9 +43,25 @@ export function parseDatabaseUrl(databaseUrl) {
   try {
     url = new URL(databaseUrl);
   } catch {
-    const head = String(databaseUrl).trim().slice(0, 24);
+    const value = String(databaseUrl).trim();
+    // A string that already looks like a connection URL but will not parse is
+    // almost always a password with a character that needs percent-encoding.
+    if (/^postgres(ql)?:\/\//i.test(value)) {
+      throw new Error(
+        'DATABASE_URL could not be parsed. A password containing @ : / ? # or a space breaks it - ' +
+          'percent-encode those characters (@ as %40, : as %3A, / as %2F, ? as %3F, # as %23, space as %20).',
+      );
+    }
+    // The whole shell command pasted into the value, variable name and all.
+    const assignment = /^([A-Z_][A-Z0-9_]*)\s*=/i.exec(value);
+    if (assignment) {
+      throw new Error(
+        `DATABASE_URL contains the assignment "${assignment[1]}=..." rather than a value. Set only the URL ` +
+          `itself: ${expected} - no variable name, no quotes, no trailing command.`,
+      );
+    }
     throw new Error(
-      `DATABASE_URL is not a connection URL (starts with "${head}"). Expected ${expected} - ` +
+      `DATABASE_URL is not a connection URL (starts with "${value.slice(0, 24)}"). Expected ${expected} - ` +
         'not a psql command line and not the example from .env.example.',
     );
   }
@@ -40,13 +72,47 @@ export function parseDatabaseUrl(databaseUrl) {
   if (/[[\]]/.test(decodeURIComponent(url.password || ''))) {
     throw new Error('DATABASE_URL still contains the [YOUR-PASSWORD] placeholder - put the real database password there.');
   }
+  if (!url.password) throw new Error(`DATABASE_URL has no password. Expected ${expected}`);
 
-  return {
+  // An unencoded "@" does not fail to parse: the URL splits at the *last* one, so the
+  // user and password silently become something else and the server answers with a
+  // plain "password authentication failed". Catch it here instead.
+  const authority = String(databaseUrl).trim().split('://')[1]?.split('/')[0] ?? '';
+  const userinfo = authority.slice(0, authority.lastIndexOf('@'));
+  if (userinfo.includes('@')) {
+    throw new Error(
+      'DATABASE_URL has an unescaped "@" in the user or password, so the string splits in the wrong place. ' +
+        'Percent-encode it as %40.',
+    );
+  }
+  if (/\s/.test(String(databaseUrl).trim())) {
+    throw new Error('DATABASE_URL contains a space. Percent-encode it as %20, or remove it if it was a stray one.');
+  }
+  if (url.hash) {
+    // Everything after an unescaped '#' is a URL fragment, so the password was cut
+    // short there and the rest of the string was silently dropped.
+    throw new Error(
+      'DATABASE_URL contains an unescaped "#", so the password was cut off at it. ' +
+        'Percent-encode it as %23 (and @ as %40, : as %3A, / as %2F, ? as %3F).',
+    );
+  }
+
+  const target = {
     host: url.hostname,
-    port: url.port || '5432',
-    database: url.pathname.replace(/^\//, '') || 'postgres',
+    port: Number(url.port || 5432),
+    database: decodeURIComponent(url.pathname.replace(/^\//, '')) || 'postgres',
     user: decodeURIComponent(url.username || ''),
+    passwordLength: decodeURIComponent(url.password).length,
+    // Some deployments pass server options (a search_path, say) in the query string.
+    options: url.searchParams.get('options') || undefined,
   };
+  // Kept off the enumerable surface so logging or serialising the target - which the
+  // diagnostics do - cannot spill the password.
+  Object.defineProperty(target, 'password', {
+    value: decodeURIComponent(url.password),
+    enumerable: false,
+  });
+  return target;
 }
 
 /** Turns a driver-level failure into something that names the likely cause. */
@@ -67,13 +133,21 @@ export function describeConnectionError(error, target) {
     case 'ETIMEDOUT':
       return `${where} did not answer in time - a firewall or the wrong port.`;
     case '28P01':
-      return `the password for user "${target.user}" was rejected by ${where}.`;
+      // Supavisor strips the project suffix, so its own message names plain
+      // "postgres" - that mismatch is normal and not the problem.
+      return `the password for user "${target.user}" was rejected by ${where} ` +
+        `(${target.passwordLength} characters were sent). It must be the database password, not the account ` +
+        'password; reset it in the provider dashboard if unsure. Percent-encode @ : / ? # and spaces in it.';
     case '3D000':
       return `database "${target.database}" does not exist on ${where}.`;
     case 'SELF_SIGNED_CERT_IN_CHAIN':
     case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
-      return `TLS to ${where} could not be verified. Supply the provider's CA in DATABASE_CA_CERT, or set ` +
-        'DATABASE_SSL=no-verify to keep encryption without checking the chain.';
+      return target.hasCa
+        ? `TLS to ${where} could not be verified: the certificate in DATABASE_CA_CERT does not sign this ` +
+            "server's chain. Download the provider's current CA, or set DATABASE_SSL=no-verify to keep " +
+            'encryption without checking the chain.'
+        : `TLS to ${where} could not be verified against the system roots. Supply the provider's CA in ` +
+            'DATABASE_CA_CERT, or set DATABASE_SSL=no-verify to keep encryption without checking the chain.';
     default:
       return `could not connect to ${where} (${error.code || error.message}).`;
   }
@@ -118,13 +192,22 @@ export async function createPostgresStore(databaseUrl) {
   const target = parseDatabaseUrl(databaseUrl);
   const { default: pg } = await import('pg');
   const ssl = resolveSsl(databaseUrl);
+  target.hasCa = Boolean(ssl && ssl.ca);
   console.log(
     `[db] connecting to ${target.host}:${target.port}/${target.database} as ${target.user}` +
-      ` (TLS: ${ssl ? (ssl.rejectUnauthorized === false ? 'on, chain not verified' : 'on, verified') : 'off'})`,
+      ` (TLS: ${describeTls(ssl)})`,
   );
 
+  // Connection fields are passed explicitly rather than as a connection string: pg
+  // parses a string with its own rules, so a stray space would reach the server
+  // inside the database name while the checks above saw a clean value.
   const pool = new pg.Pool({
-    connectionString: databaseUrl,
+    host: target.host,
+    port: target.port,
+    database: target.database,
+    user: target.user,
+    password: target.password,
+    options: target.options,
     max: config.databasePoolMax,
     ssl,
     application_name: 'dynamic-pass',

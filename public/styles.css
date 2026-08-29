@@ -45,13 +45,51 @@ body {
   min-height: 100dvh;
 }
 
-body.is-bright {
+/*
+ * A web page cannot change the device's screen brightness - only a native app can.
+ * What it can do is give the scanner the best possible target: the code as large as
+ * the screen allows, pure black on pure white, with nothing else competing for the
+ * backlight. That is what this mode does.
+ */
+body.is-code-fullscreen {
   background: #ffffff;
-  --surface: #ffffff;
-  --text: #000000;
-  --muted: #444444;
-  --line: #dddddd;
-  filter: contrast(1.05);
+  overflow: hidden;
+}
+body.is-code-fullscreen .view > *:not(.pass-card),
+body.is-code-fullscreen .pass-card > *:not(.barcode-wrap),
+body.is-code-fullscreen .banner {
+  display: none !important;
+}
+body.is-code-fullscreen .view {
+  max-width: none;
+  padding: 0;
+}
+body.is-code-fullscreen .pass-card {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: #ffffff;
+  display: grid;
+  place-content: center;
+  padding: 12px;
+}
+body.is-code-fullscreen .barcode-wrap { background: #ffffff; padding: 0; }
+body.is-code-fullscreen .barcode svg { max-width: min(96vw, 96vh); width: min(96vw, 96vh); }
+body.is-code-fullscreen .barcode svg rect { fill: #ffffff; }
+body.is-code-fullscreen .barcode svg path { fill: #000000; }
+
+.fullscreen-hint {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: env(safe-area-inset-bottom, 12px);
+  text-align: center;
+  font-size: 0.85rem;
+  color: #666;
+  z-index: 10;
 }
 
 .view { max-width: 560px; margin: 0 auto; padding: 16px 16px 48px; }
@@ -152,8 +190,16 @@ a { color: var(--accent); }
 .switch-btn.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 
 .scan-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.scan-list li { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.scan-list li {
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  border-bottom: 1px solid var(--line); padding-bottom: 10px;
+}
 .scan-list li:last-child { border-bottom: 0; padding-bottom: 0; }
+/* The left column gives way, the timestamp never wraps: a date broken across two
+   lines is what makes these rows look misaligned on a phone. */
+.scan-list li > div { min-width: 0; flex: 1; }
+.scan-list li > div p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-list li > p { flex: none; white-space: nowrap; }
 .scan-result { font-weight: 600; }
 .scan-result.is-granted { color: var(--ok); }
 .scan-result.is-denied { color: var(--danger); }
