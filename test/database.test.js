@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.DATABASE_URL = '';
-const { resolveSsl } = await import('../server/db/pg.js');
+const { resolveSsl, parseDatabaseUrl, describeConnectionError, redactUrl } = await import('../server/db/pg.js');
 
 /**
  * node-postgres connects in the clear unless told otherwise, and reads `require`
@@ -48,4 +48,58 @@ test('a connection string that is not a URL is treated as a local socket', () =>
   assert.equal(resolveSsl('host=/var/run/postgresql dbname=pass', 'auto', ''), false);
   assert.deepEqual(resolveSsl('host=/var/run/postgresql dbname=pass', 'require', ''), { rejectUnauthorized: true });
   assert.deepEqual(resolveSsl('postgres://user:pw@example.com/db', 'auto', ''), { rejectUnauthorized: true });
+});
+
+/**
+ * node-postgres accepts a connection string it cannot parse and silently falls back
+ * to localhost, so a wrong DATABASE_URL surfaces much later as ECONNREFUSED
+ * 127.0.0.1 with no mention of the variable at fault.
+ */
+test('a connection string that is not a URL is refused by name', () => {
+  const psql = 'psql -h db.abcdef.supabase.co -p 5432 -d postgres -U postgres';
+  assert.throws(() => parseDatabaseUrl(psql), /DATABASE_URL is not a connection URL/);
+  assert.throws(() => parseDatabaseUrl(psql), /psql -h db\.abcdef\.supab/, 'shows what was actually set');
+  assert.throws(() => parseDatabaseUrl(''), /DATABASE_URL is not a connection URL/);
+  assert.throws(() => parseDatabaseUrl('mysql://user:pw@host/db'), /must start with postgres/);
+});
+
+test('an unreplaced password placeholder is caught before connecting', () => {
+  assert.throws(
+    () => parseDatabaseUrl('postgres://postgres.ref:[YOUR-PASSWORD]@aws-0-eu.pooler.supabase.com:5432/postgres'),
+    /\[YOUR-PASSWORD\] placeholder/,
+  );
+});
+
+test('a valid connection string yields the target for diagnostics', () => {
+  const target = parseDatabaseUrl('postgres://postgres.ref:s3cret@aws-0-eu-central-1.pooler.supabase.com:5432/postgres');
+  assert.deepEqual(target, {
+    host: 'aws-0-eu-central-1.pooler.supabase.com',
+    port: '5432',
+    database: 'postgres',
+    user: 'postgres.ref',
+  });
+  // Defaults match libpq: port 5432, database postgres.
+  assert.equal(parseDatabaseUrl('postgres://user@host/').port, '5432');
+  assert.equal(parseDatabaseUrl('postgres://user@host/').database, 'postgres');
+  assert.equal(parseDatabaseUrl('postgresql://user@host/app').database, 'app');
+});
+
+test('connection failures name the likely cause', () => {
+  const supabase = { host: 'aws-0-eu.pooler.supabase.com', port: '5432', database: 'postgres', user: 'postgres.ref' };
+  const local = { host: '127.0.0.1', port: '5432', database: 'pass', user: 'pass' };
+
+  assert.match(describeConnectionError({ code: 'ECONNREFUSED' }, local), /points at this machine/);
+  assert.match(describeConnectionError({ code: 'ECONNREFUSED' }, supabase), /refused/);
+  assert.match(describeConnectionError({ code: 'ENETUNREACH' }, supabase), /IPv6-only/);
+  assert.match(describeConnectionError({ code: 'ENOTFOUND' }, supabase), /does not resolve/);
+  assert.match(describeConnectionError({ code: '28P01' }, supabase), /password for user "postgres.ref"/);
+  assert.match(describeConnectionError({ code: '3D000' }, supabase), /database "postgres" does not exist/);
+  assert.match(describeConnectionError({ code: 'SELF_SIGNED_CERT_IN_CHAIN' }, supabase), /DATABASE_CA_CERT/);
+});
+
+test('a connection string is never logged with its password', () => {
+  const url = 'postgres://postgres.ref:sup3r-s3cret@aws-0-eu.pooler.supabase.com:5432/postgres';
+  const redacted = redactUrl(url);
+  assert.ok(!redacted.includes('sup3r-s3cret'));
+  assert.match(redacted, /postgres\.ref:\*\*\*@aws-0-eu\.pooler\.supabase\.com/);
 });

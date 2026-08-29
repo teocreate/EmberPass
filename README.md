@@ -303,15 +303,36 @@ OIDC_ADMIN_GROUPS=pass-admins
 оно не использует. Supabase подходит: берите строку подключения из Project Settings →
 Database и кладите её в `DATABASE_URL`.
 
+Строка берётся в диалоге Connect → вкладка **Connection String** (не в разделе с
+SDK: `SUPABASE_URL`, ключи и `SUPABASE_JWKS_URL` относятся к их REST-слою и Auth,
+здесь они не нужны — приложение ходит в PostgreSQL напрямую драйвером `pg`).
+
 ```bash
-# Пулер (порт 6543) — то, что нужно для serverless и небольших планов
+# Пулер, transaction mode — для serverless (Vercel), где инстансы короткоживущие
 DATABASE_URL=postgres://postgres.<ref>:<пароль>@aws-0-<регион>.pooler.supabase.com:6543/postgres
 
-# Прямое подключение (порт 5432) — сертификат подписан приватным CA Supabase,
-# поэтому либо приложите его сертификат, либо отключите проверку цепочки:
-DATABASE_SSL=no-verify
-# лучше так, проверка при этом остаётся включённой:
+# Пулер, session mode — для постоянно работающего процесса (Render, свой сервер)
+DATABASE_URL=postgres://postgres.<ref>:<пароль>@aws-0-<регион>.pooler.supabase.com:5432/postgres
+```
+
+Строка должна быть именно URL. Команда `psql -h db.<ref>.supabase.co ...` из того же
+диалога — это команда для терминала, а не значение переменной; если подставить её,
+`pg` не сможет её разобрать и молча пойдёт на localhost. Приложение теперь проверяет
+значение на старте и пишет, что именно не так, вместо `ECONNREFUSED 127.0.0.1`.
+
+Пулер, а не прямое подключение к `db.<ref>.supabase.co`: прямой адрес у Supabase
+резолвится в IPv6 (IPv4 — платная опция), а хостинги вроде Render ходят по IPv4.
+Пулер доступен по IPv4 на всех тарифах.
+
+Если подключение падает с `unable to verify the first certificate` или
+`self-signed certificate in certificate chain` — цепочка сертификатов не проверяется
+системными корневыми. Лечится одним из двух:
+
+```bash
+# предпочтительно: скачать сертификат CA в настройках проекта и приложить его
 DATABASE_CA_CERT="$(cat prod-ca-2021.crt)"
+# или, если сертификата под рукой нет: шифрование остаётся, проверка цепочки — нет
+DATABASE_SSL=no-verify
 ```
 
 `DATABASE_SSL=auto` (по умолчанию) включает TLS для любого хоста, кроме localhost.

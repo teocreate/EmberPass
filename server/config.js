@@ -123,10 +123,17 @@ const shape = (record, source) => ({
 export function loadSigningKey() {
   if (process.env.SIGNING_KEY) {
     const raw = process.env.SIGNING_KEY.trim();
-    const json = raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
-    const stored = JSON.parse(json);
-    if (!stored.privateKey || !stored.publicKey) {
-      throw new Error('SIGNING_KEY must contain privateKey and publicKey PEM values');
+    // The value is what `npm run genkey` prints, not the command itself - a mistake
+    // that otherwise surfaces as a JSON parse error full of binary noise.
+    const hint = 'SIGNING_KEY must be the output of `npm run genkey` (a base64 string), not the command itself';
+    let stored;
+    try {
+      stored = JSON.parse(raw.startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8'));
+    } catch {
+      throw new Error(`${hint}. Got ${raw.length} characters starting with "${raw.slice(0, 16)}".`);
+    }
+    if (!stored?.privateKey || !stored?.publicKey) {
+      throw new Error(`${hint}. The value parsed, but has no privateKey/publicKey PEM fields.`);
     }
     return shape({ kid: stored.kid ?? 1, ...stored }, 'env');
   }
