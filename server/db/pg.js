@@ -8,6 +8,77 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '']);
 
+/** A connection string with the password replaced, safe to print in a log. */
+export function redactUrl(databaseUrl) {
+  return String(databaseUrl).replace(/^(\w+:\/\/[^:@/]*):[^@]*@/, '$1:***@');
+}
+
+/**
+ * Validates DATABASE_URL before anything tries to use it.
+ *
+ * node-postgres accepts a string it cannot parse and quietly falls back to its
+ * defaults - which means localhost. On a hosted platform that surfaces much later
+ * as ECONNREFUSED 127.0.0.1:5432, with nothing in the message about the variable
+ * that is actually wrong.
+ */
+export function parseDatabaseUrl(databaseUrl) {
+  const expected = 'postgres://user:password@host:5432/database';
+  let url;
+  try {
+    url = new URL(databaseUrl);
+  } catch {
+    const head = String(databaseUrl).trim().slice(0, 24);
+    throw new Error(
+      `DATABASE_URL is not a connection URL (starts with "${head}"). Expected ${expected} - ` +
+        'not a psql command line and not the example from .env.example.',
+    );
+  }
+  if (!['postgres:', 'postgresql:'].includes(url.protocol)) {
+    throw new Error(`DATABASE_URL must start with postgres:// or postgresql:// (got ${url.protocol}//). Expected ${expected}`);
+  }
+  if (!url.hostname) throw new Error(`DATABASE_URL has no host. Expected ${expected}`);
+  if (/[[\]]/.test(decodeURIComponent(url.password || ''))) {
+    throw new Error('DATABASE_URL still contains the [YOUR-PASSWORD] placeholder - put the real database password there.');
+  }
+
+  return {
+    host: url.hostname,
+    port: url.port || '5432',
+    database: url.pathname.replace(/^\//, '') || 'postgres',
+    user: decodeURIComponent(url.username || ''),
+  };
+}
+
+/** Turns a driver-level failure into something that names the likely cause. */
+export function describeConnectionError(error, target) {
+  const where = `${target.host}:${target.port}`;
+  const local = LOCAL_HOSTS.has(target.host);
+  switch (error.code) {
+    case 'ECONNREFUSED':
+      return local
+        ? `no database is listening on ${where}. DATABASE_URL points at this machine - on a hosted platform ` +
+            'it must point at the database provider (for Supabase: Connect -> Connection String -> Session pooler).'
+        : `connection to ${where} was refused - check the host and port in DATABASE_URL.`;
+    case 'ENETUNREACH':
+      return `${where} is unreachable. Supabase's direct endpoint (db.<ref>.supabase.co) is IPv6-only unless the ` +
+        'IPv4 add-on is enabled; use the pooler host instead.';
+    case 'ENOTFOUND':
+      return `host ${target.host} does not resolve - check it for typos.`;
+    case 'ETIMEDOUT':
+      return `${where} did not answer in time - a firewall or the wrong port.`;
+    case '28P01':
+      return `the password for user "${target.user}" was rejected by ${where}.`;
+    case '3D000':
+      return `database "${target.database}" does not exist on ${where}.`;
+    case 'SELF_SIGNED_CERT_IN_CHAIN':
+    case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
+      return `TLS to ${where} could not be verified. Supply the provider's CA in DATABASE_CA_CERT, or set ` +
+        'DATABASE_SSL=no-verify to keep encryption without checking the chain.';
+    default:
+      return `could not connect to ${where} (${error.code || error.message}).`;
+  }
+}
+
 /**
  * Decides the TLS settings for the connection.
  *
@@ -44,14 +115,27 @@ export function resolveSsl(databaseUrl, mode = config.databaseSsl, caCert = conf
 
 /** PostgreSQL-backed repository. Requires the `pg` package and DATABASE_URL. */
 export async function createPostgresStore(databaseUrl) {
+  const target = parseDatabaseUrl(databaseUrl);
   const { default: pg } = await import('pg');
+  const ssl = resolveSsl(databaseUrl);
+  console.log(
+    `[db] connecting to ${target.host}:${target.port}/${target.database} as ${target.user}` +
+      ` (TLS: ${ssl ? (ssl.rejectUnauthorized === false ? 'on, chain not verified' : 'on, verified') : 'off'})`,
+  );
+
   const pool = new pg.Pool({
     connectionString: databaseUrl,
     max: config.databasePoolMax,
-    ssl: resolveSsl(databaseUrl),
+    ssl,
     application_name: 'dynamic-pass',
   });
-  await pool.query(readFileSync(join(here, 'schema.sql'), 'utf8'));
+
+  try {
+    await pool.query(readFileSync(join(here, 'schema.sql'), 'utf8'));
+  } catch (error) {
+    await pool.end().catch(() => {});
+    throw new Error(`[db] ${describeConnectionError(error, target)}`, { cause: error });
+  }
 
   const one = async (text, params) => (await pool.query(text, params)).rows[0] || null;
   const many = async (text, params) => (await pool.query(text, params)).rows;
