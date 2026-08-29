@@ -220,6 +220,24 @@ test('duplicate registrations are refused', async (t) => {
   assert.equal(second.body.error, 'email_taken');
 });
 
+test('a SIGNING_KEY that is not a key says so plainly', async () => {
+  const { loadSigningKey } = await import('../server/config.js');
+  const original = process.env.SIGNING_KEY;
+  try {
+    for (const [value, expected] of [
+      ['npm run genkey', /not the command itself/],
+      ['garbage', /output of `npm run genkey`/],
+      [Buffer.from(JSON.stringify({ kid: 1 })).toString('base64'), /no privateKey\/publicKey/],
+    ]) {
+      process.env.SIGNING_KEY = value;
+      assert.throws(() => loadSigningKey(), expected, `value: ${value.slice(0, 20)}`);
+    }
+  } finally {
+    if (original === undefined) delete process.env.SIGNING_KEY;
+    else process.env.SIGNING_KEY = original;
+  }
+});
+
 test('the verification key is public and contains no secret material', async (t) => {
   const app = await startApp();
   t.after(() => app.close());
