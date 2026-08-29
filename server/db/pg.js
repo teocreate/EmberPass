@@ -1,12 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { X509Certificate } from 'node:crypto';
 
 import { config } from '../config.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '']);
+
+/** Names the trust anchor in use, so the log says whether DATABASE_CA_CERT arrived. */
+export function describeTls(ssl) {
+  if (!ssl) return 'off';
+  const verified = ssl.rejectUnauthorized !== false;
+  if (!verified) return 'on, chain not verified';
+  if (!ssl.ca) return 'on, verified against system roots';
+  try {
+    const subject = new X509Certificate(ssl.ca).subject;
+    const cn = /CN=(.+)/.exec(subject)?.[1]?.trim() || subject.replace(/\n/g, ' ');
+    return `on, verified against DATABASE_CA_CERT (${cn})`;
+  } catch {
+    return 'on, but DATABASE_CA_CERT could not be read as a certificate';
+  }
+}
 
 /** A connection string with the password replaced, safe to print in a log. */
 export function redactUrl(databaseUrl) {
@@ -72,8 +88,12 @@ export function describeConnectionError(error, target) {
       return `database "${target.database}" does not exist on ${where}.`;
     case 'SELF_SIGNED_CERT_IN_CHAIN':
     case 'UNABLE_TO_VERIFY_LEAF_SIGNATURE':
-      return `TLS to ${where} could not be verified. Supply the provider's CA in DATABASE_CA_CERT, or set ` +
-        'DATABASE_SSL=no-verify to keep encryption without checking the chain.';
+      return target.hasCa
+        ? `TLS to ${where} could not be verified: the certificate in DATABASE_CA_CERT does not sign this ` +
+            "server's chain. Download the provider's current CA, or set DATABASE_SSL=no-verify to keep " +
+            'encryption without checking the chain.'
+        : `TLS to ${where} could not be verified against the system roots. Supply the provider's CA in ` +
+            'DATABASE_CA_CERT, or set DATABASE_SSL=no-verify to keep encryption without checking the chain.';
     default:
       return `could not connect to ${where} (${error.code || error.message}).`;
   }
@@ -118,9 +138,10 @@ export async function createPostgresStore(databaseUrl) {
   const target = parseDatabaseUrl(databaseUrl);
   const { default: pg } = await import('pg');
   const ssl = resolveSsl(databaseUrl);
+  target.hasCa = Boolean(ssl && ssl.ca);
   console.log(
     `[db] connecting to ${target.host}:${target.port}/${target.database} as ${target.user}` +
-      ` (TLS: ${ssl ? (ssl.rejectUnauthorized === false ? 'on, chain not verified' : 'on, verified') : 'off'})`,
+      ` (TLS: ${describeTls(ssl)})`,
   );
 
   const pool = new pg.Pool({

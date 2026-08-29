@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.DATABASE_URL = '';
-const { resolveSsl, parseDatabaseUrl, describeConnectionError, redactUrl } = await import('../server/db/pg.js');
+const { resolveSsl, parseDatabaseUrl, describeConnectionError, redactUrl, describeTls } =
+  await import('../server/db/pg.js');
 
 /**
  * node-postgres connects in the clear unless told otherwise, and reads `require`
@@ -129,4 +130,26 @@ test('the CA certificate may be given as PEM or as base64', async () => {
     if (original === undefined) delete process.env.DATABASE_CA_CERT;
     else process.env.DATABASE_CA_CERT = original;
   }
+});
+
+test('the startup line says which trust anchor is in use', async () => {
+  const { generateKeyPairSync, X509Certificate } = await import('node:crypto');
+  void generateKeyPairSync;
+  void X509Certificate;
+
+  assert.equal(describeTls(false), 'off');
+  assert.equal(describeTls({ rejectUnauthorized: false }), 'on, chain not verified');
+  assert.equal(describeTls({ rejectUnauthorized: true }), 'on, verified against system roots');
+  // A CA that cannot be read must say so rather than claim verification is set up.
+  assert.match(describeTls({ ca: 'not a certificate', rejectUnauthorized: true }), /could not be read/);
+});
+
+test('a chain error distinguishes a missing CA from a wrong one', () => {
+  const target = { host: 'db.example.com', port: '5432', database: 'postgres', user: 'u' };
+  const withoutCa = describeConnectionError({ code: 'SELF_SIGNED_CERT_IN_CHAIN' }, target);
+  const withCa = describeConnectionError({ code: 'SELF_SIGNED_CERT_IN_CHAIN' }, { ...target, hasCa: true });
+
+  assert.match(withoutCa, /against the system roots/);
+  assert.match(withoutCa, /Supply the provider's CA/);
+  assert.match(withCa, /does not sign this server's chain/);
 });
