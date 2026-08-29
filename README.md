@@ -1,604 +1,285 @@
-# Динамический пропуск — личный кабинет + QR/PDF417
+# Dynamic Pass
 
-Приложение на vanilla JS: PWA личного кабинета, где владелец пропуска показывает
-короткоживущий код (QR или PDF417), и второе PWA для сотрудника, который этот код
-сканирует и проверяет. Бэкенд на Node.js без фреймворков, хранилище — PostgreSQL.
+A self-hosted access pass that lives on a phone. The holder opens a PWA and sees a
+barcode that is signed, expires in 30 seconds and works exactly once. Staff open a
+second PWA, scan it with the camera, and get a full-screen allow or deny.
 
-Кодировщики QR и PDF417 написаны здесь же (`public/lib/qrcode.js`,
-`public/lib/pdf417.js`) — сторонних библиотек в них нет. Единственная вендоренная
-зависимость во всём фронтенде — декодер в приложении сотрудника (zxing-wasm, MIT):
-он подгружается только там, где браузер не умеет `BarcodeDetector`.
+Node.js with no framework, PostgreSQL for storage, vanilla JS on both front ends.
+The QR and PDF417 encoders are implemented in this repository — the only bundled
+third-party code is a WebAssembly decoder used by the staff app on browsers without
+`BarcodeDetector`.
 
 ```
-        ┌──────────────┐
-        │  Пользователь│
-        └──────┬───────┘
-               │ вход по email + паролю (сессия в httpOnly cookie)
-               ▼
-        ┌──────────────┐
-        │   PWA         │  public/
-        └──────┬───────┘
-               │ POST /api/pass/token  (каждые ~12 c)
-               ▼
-        ┌──────────────┐
-        │   Backend     │  server/  — подписывает токен ключом Ed25519
-        └──────┬───────┘
-               │ signed token: 24 байта данных + 64 байта подписи → 118 символов
-               ▼
-        ┌──────────────┐
-        │  QR / PDF417  │  рисуется на устройстве, живёт 30 секунд
-        └──────┬───────┘
-               │ SCAN (BarcodeDetector API)
-               ▼
-        ┌──────────────┐
-        │  Staff PWA    │  public/staff/
-        └──────┬───────┘
-               │ POST /api/staff/verify
-               ▼
-        ┌──────────────┐
-        │  PostgreSQL   │  users · passes · sessions · pass_scans (UNIQUE jti)
-        └──────────────┘
+   Holder                                        Staff
+   ──────                                        ─────
+   PWA  public/                                  PWA  public/staff/
+     │                                             ▲
+     │ POST /api/pass/token   (every 12 s)         │ camera scan
+     ▼                                             │
+   Backend  server/  ──── Ed25519 signature ──► barcode on screen
+     │                    88 bytes → 118 chars     │
+     │                                             │ POST /api/staff/verify
+     ▼                                             ▼
+   PostgreSQL   users · passes · sessions · pass_scans (UNIQUE jti)
 ```
 
-## Что здесь сделано
+## What it does
 
-* **Личный кабинет.** Регистрация с проверкой email, вход, сессии в httpOnly-cookie,
-  пароли через scrypt, ограничение частоты попыток входа.
-* **Единый вход через VoidAuth.** Полноценный OIDC-клиент: authorization code + PKCE,
-  проверка подписи ID-токена по JWKS, роли из групп провайдера, выход с завершением
-  сессии на стороне провайдера. Подробности ниже.
-* **Динамический пропуск.** Сервер выдаёт подписанный токен на 30 секунд
-  (`PASS_TOKEN_TTL`), приложение перерисовывает код каждые 12 (`PASS_TOKEN_REFRESH`)
-  и показывает обратный отсчёт до **смены кода**, а не до истечения токена — иначе
-  код на экране менялся бы, когда на кольце ещё треть. Если обновление не проходит,
-  отсчёт переключается на реальный остаток жизни токена: код всё ещё сканируется.
-  Скриншот пропуска бесполезен уже через полминуты.
-* **Два формата кода.** QR — основной. PDF417 (для лазерных сканеров на турникетах)
-  включается переменной `PASS_PDF417`; пока он выключен, переключатель не показывается,
-  а кодировщик даже не скачивается. Сканер сотрудника при этом ищет только QR и не
-  принимает за пропуск посторонний штрихкод в кадре.
-* **Приложение сотрудника.** Сканирование камерой: через `BarcodeDetector`, где он
-  есть (Chrome, Android), и через вендоренный WebAssembly-декодер ZXing там, где его
-  нет (Safari на iOS). Оба пути читают и QR, и PDF417. Плюс ручной ввод кода, журнал
-  последних проверок и работа офлайн.
-* **Одноразовость.** `jti` каждого токена пишется в `pass_scans` с UNIQUE-индексом:
-  повторное сканирование того же кода получает отказ `already_used` и показывает,
-  где и когда код использовали в первый раз.
+- **Accounts.** Email + password with scrypt hashing, httpOnly session cookies,
+  rate-limited sign-in — or single sign-on against any OIDC provider.
+- **Rotating pass.** The server issues a token signed with Ed25519 that lives 30
+  seconds; the holder app redraws the code every 12. A screenshot is useless within
+  half a minute.
+- **Single use.** Each token carries a random `jti` written to `pass_scans` under a
+  UNIQUE index. A second scan of the same code is denied as `already_used` and shows
+  where and when it was first used.
+- **Offline verification.** The public key is served as a JWK, so a staff device with
+  no network verifies format, expiry and signature locally through WebCrypto and
+  queues the scan for the server.
+- **Two formats.** QR by default. PDF417, for turnstiles with laser scanners, is
+  enabled with `PASS_PDF417=true`; while it is off, its encoder is never downloaded
+  and the scanner will not accept one.
 
-## Быстрый старт
+## Quick start
 
 ```bash
-# 1. база
-createdb pass && psql -c "CREATE USER pass WITH PASSWORD 'pass'" && \
-  psql -c "ALTER DATABASE pass OWNER TO pass"
-
-# 2. настройки
-cp .env.example .env      # как минимум пропишите DATABASE_URL
-
-# 3. зависимости (только драйвер pg; всё остальное — стандартная библиотека)
 npm install
-
-# 4. демо-аккаунты и запуск
-npm run seed
+cp .env.example .env        # set DATABASE_URL
+npm run seed                # demo accounts
 npm start
 ```
 
-Схема таблиц применяется автоматически при старте (`server/db/schema.sql`,
-идемпотентно). Ключ подписи Ed25519 генерируется при первом запуске в
-`data/signing-key.json` — этот файл нужно бэкапить и не коммитить.
+- `http://localhost:3000/` — holder app, `holder@example.com`
+- `http://localhost:3000/staff/` — staff app, `staff@example.com`
+- password for both: `demo-password-123`
 
-Открыть:
+The schema is applied on start, idempotently. The Ed25519 signing key is generated on
+first run into `data/signing-key.json`; back it up and keep it out of version control.
 
-* `http://localhost:3000/` — личный кабинет (`holder@example.com`)
-* `http://localhost:3000/staff/` — приложение сотрудника (`staff@example.com`)
-* пароль демо-аккаунтов: `demo-password-123`
+Without `DATABASE_URL` the server runs on an in-memory store — useful for a look
+around, but everything is lost on restart.
 
-Без `DATABASE_URL` сервер поднимется на встроенном хранилище в памяти — удобно
-посмотреть приложение, но данные исчезнут при перезапуске.
+The camera needs a secure context: `https://` or `http://localhost`. A LAN address
+like `http://192.168.x.x` will not get camera permission.
 
-**Камера работает только в защищённом контексте.** Это `https://` или
-`http://localhost`. По локальной сети `http://192.168.x.x` браузер камеру не даст —
-нужен туннель или сертификат.
+## Configuration
 
-## Формат токена
+Every variable has a working default except `DATABASE_URL`. See `.env.example` for
+the full list.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | — | PostgreSQL connection string; in-memory store when unset |
+| `SIGNING_KEY` | — | Ed25519 key as base64 (`npm run genkey`); required on read-only filesystems |
+| `SIGNING_KEY_FILE` | `data/signing-key.json` | Where the key is stored otherwise |
+| `PASS_TOKEN_TTL` | `30` | Token lifetime, seconds |
+| `PASS_TOKEN_REFRESH` | `12` | How often the holder app requests a new code |
+| `SESSION_TTL` | `43200` | Session lifetime, seconds |
+| `SECURE_COOKIES` | `false` | `Secure` flag on session cookies; on by default on serverless |
+| `CLOCK_SKEW` | `5` | Tolerance between phone, gate and server, seconds |
+| `PASS_PDF417` | `false` | Offer PDF417 alongside QR |
+| `REGISTRATION_OPEN` | `true` | Public sign-up |
+| `CHECK_EMAIL_MX` | `true` | Require the address's domain to accept mail |
+| `DATABASE_SSL` | `auto` | `auto`, `require`, `no-verify`, `verify-full`, `disable` |
+| `DATABASE_CA_CERT` | — | Provider CA as PEM or base64, to keep verification on |
+| `DATABASE_POOL_MAX` | `10` (2 on serverless) | Connection pool size |
+| `AUTH_MODE` | `local` | `local`, `oidc`, or `both` |
+| `OIDC_*` | — | Single sign-on, see below |
+
+## Token format
 
 ```
-байт  0      версия формата (1)
-байт  1      идентификатор ключа подписи
-байты 2-5    id пропуска      (uint32 BE)
-байты 6-9    id владельца     (uint32 BE)
-байты 10-13  время выпуска    (uint32 BE, unix-секунды)
-байты 14-15  время жизни      (uint16 BE, секунды)
-байты 16-23  jti              (8 случайных байт — защита от повтора)
-байты 24-87  подпись Ed25519 над байтами 0-23
+byte  0      format version (1)
+byte  1      signing key id
+bytes 2-5    pass id      (uint32 BE)
+bytes 6-9    holder id    (uint32 BE)
+bytes 10-13  issued at    (uint32 BE, unix seconds)
+bytes 14-15  lifetime     (uint16 BE, seconds)
+bytes 16-23  jti          (8 random bytes, replay protection)
+bytes 24-87  Ed25519 signature over bytes 0-23
 ```
 
-88 байт → 118 символов base64url. Это влезает в QR версии 7 и в PDF417 10×13 —
-такие символы уверенно читаются с экрана телефона. JSON-токен той же семантики был
-бы вдвое длиннее и потребовал бы QR версии 12+.
-
-Подпись асимметричная не просто так: публичный ключ отдаётся по
-`GET /api/verify/key`, и приложение сотрудника может проверить подпись **офлайн**
-через WebCrypto. Офлайн проверяются формат, срок и подпись; повторное использование
-офлайн не определить, поэтому такие сканы складываются в очередь в localStorage и
-досылаются на сервер, когда сеть вернётся. В интерфейсе это честно помечено
-жёлтым «Подпись верна», а не зелёным «Проход разрешён».
-
-## Проверки при сканировании
-
-| Отказ | Когда |
-| --- | --- |
-| `malformed` | это не токен пропуска |
-| `bad_signature` | подпись не сходится (подделка или чужой ключ) |
-| `unknown_key` | токен подписан ключом, которого сервер не знает |
-| `expired` / `not_yet_valid` | код старше 30 секунд или из будущего (допуск ±5 с) |
-| `already_used` | этот `jti` уже сканировали — показывается место и время |
-| `pass_suspended` / `pass_revoked` / `pass_expired` | статус или срок пропуска |
-| `holder_suspended` | владелец заблокирован |
-| `unknown_pass` / `unknown_holder` / `pass_mismatch` | пропуск или владелец не найдены |
+88 bytes → 118 base64url characters, which fits a version 7 QR symbol. The signature
+is asymmetric on purpose: `GET /api/verify/key` hands out the public key so anything
+downstream — a turnstile controller, another service, an offline device — can verify a
+pass without talking to this server and without holding a secret.
 
 ## API
 
-| Метод | Путь | Кто | Назначение |
+| Method | Path | Who | Purpose |
 | --- | --- | --- | --- |
-| POST | `/api/auth/register` | все | регистрация, сразу выдаёт пропуск |
-| POST | `/api/auth/login` | все | вход, ставит cookie сессии |
-| POST | `/api/auth/logout` | все | выход |
-| POST | `/api/auth/check-email` | все | проверка email до отправки формы |
-| GET | `/api/auth/oidc/start` | все | начало единого входа, редирект к провайдеру |
-| GET | `/api/auth/oidc/callback` | все | возврат от провайдера, выдача сессии |
-| GET | `/api/auth/me` | все | текущая сессия |
-| GET | `/api/pass` | владелец | пропуск и последние проходы |
-| POST | `/api/pass/token` | владелец | выпуск короткоживущего токена |
-| GET | `/api/pass/history` | владелец | история проходов |
-| GET | `/api/verify/key` | все | публичный ключ (JWK) для офлайн-проверки |
-| POST | `/api/staff/verify` | сотрудник | проверка отсканированного кода |
-| GET | `/api/staff/scans` | сотрудник | журнал проверок |
+| POST | `/api/auth/register` | anyone | sign up, issues a pass |
+| POST | `/api/auth/login` | anyone | sign in, sets the session cookie |
+| POST | `/api/auth/logout` | anyone | sign out |
+| POST | `/api/auth/check-email` | anyone | validate an address before submit |
+| GET | `/api/auth/oidc/start` | anyone | begin single sign-on |
+| GET | `/api/auth/oidc/callback` | anyone | provider return, issues a session |
+| GET | `/api/auth/me` | anyone | current session |
+| GET | `/api/pass` | holder | pass and recent entries |
+| POST | `/api/pass/token` | holder | issue a short-lived token |
+| GET | `/api/pass/history` | holder | entry history |
+| GET | `/api/verify/key` | anyone | public key as JWK |
+| POST | `/api/staff/verify` | staff | verify a scanned code |
+| GET | `/api/staff/scans` | staff | scan log |
 
-Роли: `user` (владелец пропуска), `staff` (сканирует), `admin`. Локальная
-регистрация всегда создаёт `user`; роль назначается через `scripts/seed.js`, SQL или
-— при включённом едином входе — группами в VoidAuth.
+`POST /api/staff/verify` answers with `{ granted, reason, holder, pass }`. Denials:
 
-## Структура
+| Reason | Meaning |
+| --- | --- |
+| `malformed`, `unsupported_version` | not a pass token |
+| `bad_signature` | signature does not match — forged or signed with another key |
+| `unknown_key` | signed with a key id this server does not know |
+| `expired`, `not_yet_valid` | outside the token's lifetime |
+| `already_used` | this `jti` was scanned before; the response names where and when |
+| `pass_suspended`, `pass_revoked`, `pass_expired`, `pass_not_active_yet` | pass status |
+| `holder_suspended` | holder blocked |
+| `unknown_pass`, `unknown_holder`, `pass_mismatch` | pass or holder not found |
 
-```
-api/index.js          точка входа для serverless-хостинга (Vercel)
-compose.voidauth.yml  локальный стенд: VoidAuth и база приложения
-render.yaml           blueprint для Render
-vercel.json           статика из public/, все /api/* — в функцию
-server/
-  index.js            обработчик запросов, маршруты, статика, заголовки безопасности
-  config.js           конфигурация из .env, ключ подписи
-  lib/token.js        выпуск и проверка токенов пропуска
-  lib/oidc.js         OIDC-клиент: discovery, JWKS, PKCE, проверка ID-токена
-  lib/crypto.js       scrypt, случайные токены, сравнение без утечки времени
-  lib/email.js        проверка email: синтаксис, MX, одноразовые домены
-  lib/http.js         json, cookie, статика, ошибки
-  lib/ratelimit.js    ограничение частоты запросов
-  db/schema.sql       таблицы PostgreSQL
-  db/pg.js            репозиторий поверх PostgreSQL
-  db/memory.js        то же в памяти — для запуска без базы
-  routes/             auth, oidc, pass, staff
-public/
-  index.html app.js styles.css      личный кабинет
-  lib/qrcode.js                     кодировщик QR (версии 1-40, L/M/Q/H)
-  lib/pdf417.js  lib/pdf417-codes.js кодировщик PDF417 (text/byte, EC 0-8)
-  lib/render.js  lib/api.js         отрисовка SVG и клиент API
-  lib/sso.js                        кнопка единого входа для обоих приложений
-  staff/                            приложение сотрудника
-  sw.js  manifest.webmanifest       офлайн-оболочка PWA
-scripts/seed.js  scripts/genkey.js  демо-аккаунты и ключ подписи для деплоя
-test/                               node:test — 71 тест
-```
+Roles are `user`, `staff` and `admin`. Local registration always creates a `user`;
+elevate through `scripts/seed.js`, SQL, or provider groups when SSO is on.
 
-## Сканер на iOS
+## Using the pieces separately
 
-Safari не реализует `BarcodeDetector` — ни в какой версии. Поэтому приложение
-сотрудника выбирает путь само: где нативный API есть, работает он; где нет —
-кадры с камеры декодирует WebAssembly-сборка ZXing (`public/staff/lib/vendor/zxing`,
-MIT). Это тот же движок, которым проверялись кодировщики этого проекта, и он читает
-оба формата, так что iOS не теряет ничего по сравнению с Android.
+The parts are deliberately decoupled, so a project can adopt one without the rest.
 
-Цена — разовая загрузка 1,1 МБ. Она начинается сразу после входа сотрудника, пока
-тот вводит точку прохода, и дальше лежит в кеше service worker'а — включая офлайн.
-Модуль ищет свой `.wasm` рядом с собой: по умолчанию он полез бы за ним на CDN, что
-запрещено политикой безопасности страницы и поставило бы проходную в зависимость от
-чужого аптайма.
+- **Barcode encoders.** `public/lib/qrcode.js` and `public/lib/pdf417.js` are
+  dependency-free ES modules: `encodeQR` / `encodePDF417` turn a string into a symbol, and
+  `qrToSvg` / `pdf417ToSvg` draw it. They run
+  in a browser or in Node and are not tied to anything else here.
+- **Verifying passes elsewhere.** Fetch the JWK from `/api/verify/key` and check the
+  88-byte token against the layout above. No shared secret, no call back to this
+  service. `public/staff/lib/passtoken.js` is a working WebCrypto implementation.
+- **Issuing passes from another system.** `server/lib/token.js` exposes `PassSigner`
+  and `verifyPassToken`; the pass and holder ids are plain integers, so an existing
+  directory (HR system, CRM, 1C) can own identity while this service owns the code.
+- **Identity.** With `AUTH_MODE=oidc` this app keeps no passwords at all — accounts,
+  groups and sign-out live in the provider.
+- **Storage.** `server/db/pg.js` and `server/db/memory.js` implement the same
+  repository interface; a third backend only has to match it.
 
-WebAssembly требует `'wasm-unsafe-eval'` в `script-src`. Это разрешает компиляцию
-wasm и **не** разрешает `eval` для JavaScript.
+## Single sign-on
 
-## Оформление
-
-Предмет диктует форму: это пропуск — документ, который живёт в телефоне и истекает
-через полминуты. Отсюда три решения, которым подчинено остальное.
-
-**Код — окно ламината.** Белая панель с кромкой, под ней серийник моноширинным
-шрифтом, как штамп на бейдже. Панель остаётся белой в обеих темах: это мишень для
-сканера, а не элемент оформления.
-
-**Время — свойство кода, а не отдельный виджет.** Остаток жизни идёт линией ровно по
-ширине окна, секунды — табличной цифрой у её края. Раньше это было кольцо сбоку,
-которое отсчитывало не то событие, которое видит глаз.
-
-**Цвет разделён по ролям.** Бирюзовый (`--signal`) — то, что можно нажать. Зелёный,
-красный и янтарный — только приговор системы; ими нельзя красить кнопки. Поэтому
-вердикт сотрудника занимает весь экран: с вытянутой руки, в плохом свете, за долю
-секунды должно быть видно, пускать или нет. Разрешение гаснет само через 2,5 секунды
-— очередь идёт дальше; отказ остаётся, пока его не закроют, потому что причину надо
-прочитать.
-
-Остальное намеренно тихо: одна системная гарнитура, моноширинная — только для того,
-что «отштамповано» (серийники, секунды, время в журнале), размерная шкала в `rem`,
-трекинг зависит от кегля. Никаких украшений, которые соревнуются с кодом за внимание.
-
-Что проверяется автоматически при изменениях интерфейса: цели касания не меньше 44px,
-контраст текста не ниже 4.5:1 в обеих темах, отсутствие ошибок CSP и консоли. Учтены
-`prefers-reduced-motion` (отсчёт продолжает двигаться — это информация, а не
-украшение), `prefers-contrast` и `prefers-reduced-transparency`.
-
-## Почему PDF417 такой, какой есть
-
-Символ рисуется в 4 колонки с высотой строки 4, а не «широко и плоско», как было
-сначала. Причина измерена, а не выбрана на глаз: при съёмке экрана телефона PDF417
-разваливается от лёгкого размытия и наклона в несколько градусов, потому что его
-модули заметно уже, чем у QR. Прогон по конфигурациям при размытии 1,5 px и наклоне
-5° (кадр 1280 px):
-
-| Колонок | Высота строки 3 | Высота строки 4 |
-| --- | --- | --- |
-| 4 | читается | читается |
-| 5 | не читается | читается |
-| 6 | не читается | читается |
-| 8 и 10 | не читается | не читается |
-
-Сканер по той же причине декодирует кадр в 1280 px, а не в 640: замер показал 14 мс
-на кадр против интервала сканирования в 320 мс — разрешение почти ничего не стоит,
-а несостоявшиеся считывания стоили дорого.
-
-Даже так PDF417 требует более твёрдой руки, чем QR: QR в тех же условиях переживает
-размытие 2 и наклон 8°, PDF417 — нет. Для показа с экрана телефона QR остаётся
-основным форматом; PDF417 нужен там, где на проходной стоит лазерный сканер, и с ним
-он справляется куда лучше, чем камера смартфона.
-
-## Показ кода на экране телефона
-
-Кнопка «Во весь экран» разворачивает код на весь экран: чистый чёрный на чистом
-белом, ничего лишнего, плюс `wake lock`, чтобы экран не гас под сканером. Яркость
-подсветки веб-страница выставить не может — это умеет только нативное приложение,
-поэтому кнопка делает то, что реально влияет на читаемость: увеличивает код и
-максимизирует контраст.
-
-## Проверка email
-
-`server/lib/email.js` отбраковывает по слоям: синтаксис, зарезервированные домены
-(RFC 2606/6761 — `example.com`, `.test`, `.invalid`, `.localhost`), одноразовые
-адреса, наличие MX. Отдельно обрабатывается «null MX» (RFC 7505): домен вроде
-`example.com` публикует MX с пустым адресом, что означает «почту не принимаю» —
-простой подсчёт записей такой домен пропускал.
-
-Подтверждения адреса письмом нет: SMTP-отправки в проекте нет вовсе, и регистрация
-считается завершённой сразу. Для демо это осознанный компромисс.
-
-## Заглянуть в данные
-
-Всё лежит в схеме `public` обычной базы: `users`, `passes`, `sessions`, `pass_scans`.
-В дашборде Supabase — Table Editor, селектор схемы `public`. Или SQL Editor:
-
-```sql
--- кто зарегистрирован
-SELECT id, email, full_name, role, status, auth_source, created_at, last_login_at
-FROM users ORDER BY id;
-
--- пропуска с владельцами
-SELECT p.id, p.serial, p.tier, p.status, u.email, u.full_name
-FROM passes p JOIN users u ON u.id = p.user_id ORDER BY p.id;
-
--- последние проходы
-SELECT s.scanned_at, s.result, s.gate, u.full_name AS holder, st.full_name AS staff
-FROM pass_scans s
-LEFT JOIN users u ON u.id = s.user_id
-LEFT JOIN users st ON st.id = s.staff_id
-ORDER BY s.scanned_at DESC LIMIT 50;
-
--- выдать доступ сотрудника (когда единый вход не используется)
-UPDATE users SET role = 'staff' WHERE email = 'ivanov@example.com';
-
--- заблокировать пропуск
-UPDATE passes SET status = 'suspended' WHERE serial = 'PS-00001-ABCD';
-```
-
-Паролей в открытом виде там нет: в `password_hash` лежит scrypt-хеш, а у аккаунтов из
-единого входа это поле пустое. В `sessions` хранится не токен, а его SHA-256.
-
-Table Editor покажет на этих таблицах отметку «RLS enabled» без политик — так и
-задумано. Row level security и отзыв грантов защищают их от чтения через PostgREST
-по публичному ключу проекта; на дашборд это не влияет, потому что гранты отозваны
-только у ролей `anon` и `authenticated`, а Studio ходит в базу с правами владельца.
-
-## Кодировщики штрихкодов
-
-Написаны с нуля по ISO/IEC 18004 (QR) и ISO/IEC 15438 (PDF417), потому что тянуть
-две библиотеки ради одной картинки не хотелось, а код должен работать офлайн.
-
-Как проверялась корректность (не тестами «на глаз»):
-
-* QR: 168 комбинаций версия × уровень коррекции × маска сравнены модуль в модуль с
-  эталонным кодировщиком `python-qrcode` — совпадение полное. Символы с
-  автоматической маской дополнительно раскодированы `cv2.QRCodeDetector`.
-* PDF417: полиномы Рида-Соломона для всех девяти уровней коррекции считаются на
-  лету и совпадают с таблицами `pdf417gen`; готовые символы раскодированы
-  `zxing-cpp` (включая кириллицу в byte-режиме и полезную нагрузку в 300 символов).
-* Живой токен из работающего сервера прошёл полный путь: выпуск → отрисовка → PNG →
-  распознавание сторонним декодером → совпадение строки.
-
-Таблица низкоуровневых образцов PDF417 (3×929 значений в `pdf417-codes.js`) — это
-данные стандарта; сами полиномы коррекции вычисляются, а не хранятся.
-
-## Тесты
+An OIDC relying party built on `node:crypto` and `fetch` (`server/lib/oidc.js`):
+authorization code with PKCE, ID token verified against the provider's JWKS, `state`
+and `nonce` in a short-lived httpOnly cookie, RP-initiated logout. Tested against
+VoidAuth; any conformant provider works.
 
 ```bash
-npm test
-```
-
-71 тест: кодировщики (эталонные векторы, структура символов), токены (подпись,
-срок, подделка каждого байта, чужой ключ), API (регистрация → выпуск → проход →
-повтор → отказ, роли, блокировка пропуска, ограничение частоты входов) и проверка
-email, плюс отдельный набор на serverless-точку входа (тело запроса, уже разобранное
-платформой; 404 в JSON вместо HTML; Secure-флаг у cookie). Тесты работают на
-хранилище в памяти, база для них не нужна. Единый вход проверяется против
-подставного OIDC-провайдера (`test/helpers/oidc-provider.js`), который повторяет
-контракт VoidAuth: issuer на `/oidc`, RS256, JWKS, PKCE, группы в claim `groups`.
-
-## Единый вход через VoidAuth
-
-Приложение работает как обычный OIDC-клиент: authorization code + PKCE, проверка
-ID-токена по JWKS провайдера. Своих зависимостей у клиента нет — всё на `node:crypto`
-и `fetch` (`server/lib/oidc.js`).
-
-Личности живут в VoidAuth, пропуска и проходы — в базе этого приложения. После
-успешного входа приложение всё равно выдаёт **свою** сессионную cookie: сканер на
-проходной не должен ходить к провайдеру на каждый запрос. Access- и refresh-токены
-не хранятся вообще — от имени пользователя приложение никуда не ходит.
-
-### Настройка
-
-1. Поднимите провайдер и базу: `docker compose -f compose.voidauth.yml up -d`,
-   откройте `http://localhost:3000` и заведите первого администратора.
-2. В VoidAuth создайте OIDC-приложение (админка → OIDC) со значениями:
-
-   | Поле | Значение |
-   | --- | --- |
-   | Client ID | `pass-app` |
-   | Client Secret | сгенерируйте и сохраните |
-   | Redirect URLs | `http://localhost:3001/api/auth/oidc/callback` |
-   | Auth Method | `client_secret_basic` (по умолчанию) |
-   | Response Types | `code` |
-   | Grant Types | `authorization_code` |
-
-   Приложения можно объявлять и переменными окружения VoidAuth
-   (`OIDC_<client-id>_CLIENT_SECRET` и далее) — см. их документацию OIDC-Setup.
-3. Создайте группы `pass-staff` и `pass-admins` и добавьте в них сотрудников.
-4. Запустите приложение с переменными:
-
-```bash
-OIDC_ISSUER=http://localhost:3000/oidc      # APP_URL провайдера + /oidc
+OIDC_ISSUER=https://auth.example.com/oidc     # VoidAuth: APP_URL + /oidc
 OIDC_CLIENT_ID=pass-app
-OIDC_CLIENT_SECRET=<секрет из шага 2>
-OIDC_REDIRECT_URI=http://localhost:3001/api/auth/oidc/callback
+OIDC_CLIENT_SECRET=...
+OIDC_REDIRECT_URI=https://pass.example.com/api/auth/oidc/callback
 OIDC_STAFF_GROUPS=pass-staff
 OIDC_ADMIN_GROUPS=pass-admins
 ```
 
-Больше ничего указывать не нужно: адреса авторизации, токенов, JWKS и завершения
-сессии читаются из `<issuer>/.well-known/openid-configuration`.
+Endpoints are read from `<issuer>/.well-known/openid-configuration`. `OIDC_REDIRECT_URI`
+must match the provider's redirect URL character for character.
 
-`AUTH_MODE` решает, что остаётся на экране входа: `both` (по умолчанию, когда
-провайдер настроен) — кнопка SSO и форма пароля; `oidc` — только SSO, локальные
-вход и регистрация отвечают `403`; `local` — как будто провайдера нет.
+Roles are recomputed from the `groups` claim on every sign-in, so removing someone from
+`pass-staff` removes their scanner access at their next login. Accounts are linked by
+`sub` first, then by email — and only when the provider reports the address as
+verified, otherwise the login is refused with `email_conflict`. Access and refresh
+tokens are never stored; after a successful login the app issues its own session
+cookie so the gate does not depend on the provider being reachable.
 
-### Как это работает
+`compose.voidauth.yml` brings up a provider and its database for local work.
 
-Роль вычисляется из claim `groups` **при каждом входе**: убрали человека из
-`pass-staff` в VoidAuth — на следующем входе он потеряет доступ к сканеру. Ответ на
-вопрос «как выдать доступ сотрудника» при включённом SSO сводится к членству в
-группе, SQL больше не нужен.
+## Database
 
-Аккаунты связываются так: сначала по `sub` провайдера, затем по email — но только
-если провайдер пометил адрес как подтверждённый (`email_verified`). Иначе тот, кто
-может завести в провайдере чужой адрес, забрал бы себе локальный аккаунт; такой вход
-отклоняется с `email_conflict`. Если аккаунта нет вовсе — он создаётся вместе с
-пропуском, без пароля: колонка `password_hash` пустая, и форма входа по паролю для
-него не сработает никогда.
-
-Выход завершает и сессию провайдера (RP-initiated logout с `id_token_hint`), иначе
-следующий вход прошёл бы молча, без экрана VoidAuth. Отключается через
-`OIDC_RP_LOGOUT=false`.
-
-Что проверяется у ID-токена: подпись по JWKS (с повторным запросом ключей при
-ротации), `iss`, `aud` и `azp`, срок с допуском `CLOCK_SKEW`, `nonce` из этого
-конкретного входа. Плюс `state` и PKCE-verifier, которые живут в отдельной
-короткоживущей httpOnly-cookie и стираются сразу после возврата.
-
-### На что обратить внимание
-
-* Порт по умолчанию у VoidAuth и у этого приложения одинаковый — 3000. В стенде
-  приложение запускается на 3001, иначе они конфликтуют.
-* `OIDC_REDIRECT_URI` должен **совпадать посимвольно** с Redirect URL в VoidAuth,
-  включая схему и порт. Это самая частая причина `redirect_uri_mismatch`.
-* В бою и провайдер, и приложение должны работать по HTTPS: cookie идут с флагом
-  `Secure`, и провайдер, как правило, откажется работать иначе.
-* Если провайдер не кладёт `groups` в ID-токен, приложение дочитает claims через
-  `userinfo`. Набор запрашиваемых скоупов меняется через `OIDC_SCOPE`.
-
-## База данных: Supabase и другие хостинги
-
-Приложению нужен обычный PostgreSQL — ничего специфичного для конкретного провайдера
-оно не использует. Supabase подходит: берите строку подключения из Project Settings →
-Database и кладите её в `DATABASE_URL`.
-
-Строка берётся в диалоге Connect → вкладка **Connection String** (не в разделе с
-SDK: `SUPABASE_URL`, ключи и `SUPABASE_JWKS_URL` относятся к их REST-слою и Auth,
-здесь они не нужны — приложение ходит в PostgreSQL напрямую драйвером `pg`).
-
-```bash
-# Пулер, transaction mode — для serverless (Vercel), где инстансы короткоживущие
-DATABASE_URL=postgres://postgres.<ref>:<пароль>@aws-0-<регион>.pooler.supabase.com:6543/postgres
-
-# Пулер, session mode — для постоянно работающего процесса (Render, свой сервер)
-DATABASE_URL=postgres://postgres.<ref>:<пароль>@aws-0-<регион>.pooler.supabase.com:5432/postgres
-```
-
-Строка должна быть именно URL. Команда `psql -h db.<ref>.supabase.co ...` из того же
-диалога — это команда для терминала, а не значение переменной; если подставить её,
-`pg` не сможет её разобрать и молча пойдёт на localhost. Приложение теперь проверяет
-значение на старте и пишет, что именно не так, вместо `ECONNREFUSED 127.0.0.1`.
-
-Пулер, а не прямое подключение к `db.<ref>.supabase.co`: прямой адрес у Supabase
-резолвится в IPv6 (IPv4 — платная опция), а хостинги вроде Render ходят по IPv4.
-Пулер доступен по IPv4 на всех тарифах.
-
-Если подключение падает с `unable to verify the first certificate` или
-`self-signed certificate in certificate chain` — цепочка сертификатов не проверяется
-системными корневыми. Лечится одним из двух:
-
-```bash
-# предпочтительно: сертификат Supabase CA (Project Settings -> Database ->
-# SSL Configuration -> Download certificate). Принимается и как PEM, и как base64 —
-# одной строкой его проще вставить в панель хостинга:
-DATABASE_CA_CERT="$(base64 -w0 prod-ca-2021.crt)"
-# или, если сертификата под рукой нет: шифрование остаётся, проверка цепочки — нет
-DATABASE_SSL=no-verify
-```
-
-Пулер Supabase отдаёт цепочку, подписанную их собственным корневым сертификатом
-(`Supabase Root 2021 CA`), а не публичным CA — системные корневые его не знают, и
-подключение падает с `self-signed certificate in certificate chain`. Это ожидаемо
-и лечится любым из двух способов выше.
-
-`DATABASE_SSL=auto` (по умолчанию) включает TLS для любого хоста, кроме localhost.
-Это не косметика: без явной настройки `pg` соединяется **без шифрования**, если в
-строке нет `sslmode`, а с `sslmode=require` он в 8-й версии требует полной проверки
-цепочки и падает на приватном CA. Оба случая выглядят как «база не отвечает».
-
-Поведение режимов проверено на PostgreSQL с включённым TLS и сертификатом,
-подписанным собственным CA:
-
-| `DATABASE_SSL` | Результат |
-| --- | --- |
-| `require` без CA | отказ: `unable to verify the first certificate` |
-| `no-verify` | соединение шифруется, цепочка не проверяется |
-| `require` или `verify-full` + `DATABASE_CA_CERT` | шифруется **и** проверяется |
-| `auto` на localhost | без шифрования, как и задумано |
-
-Пулер в transaction-режиме (порт 6543) не поддерживает prepared statements —
-приложение их не использует, именованных запросов в коде нет.
-
-Проверить строку, не дожидаясь деплоя (команда для терминала — в переменную
-окружения кладётся только сам URL, без имени переменной и кавычек):
+Any PostgreSQL instance. Four tables in the `public` schema — `users`, `passes`,
+`sessions`, `pass_scans` — created on first start from `server/db/schema.sql`.
 
 ```bash
 DATABASE_URL="postgres://..." npm run dbcheck
 ```
 
-Скрипт печатает хост, пользователя, длину пароля и режим TLS, затем подключается и
-либо показывает версию сервера и наличие таблиц, либо называет причину отказа.
+prints the host, user, TLS mode and server version, or names the reason it failed.
 
-Схема создаётся при первом запуске. На Supabase к ней применяется дополнительная
-защита: любая таблица в схеме `public` там доступна через PostgREST по публичному
-anon-ключу, а у нас в `users` лежат хеши паролей и в `pass_scans` — весь журнал
-проходов. Поэтому схема отзывает гранты у ролей `anon` и `authenticated` и включает
-row level security на своих четырёх таблицах. На обычном PostgreSQL блок
-пропускается: таких ролей там нет.
+`DATABASE_SSL=auto` enables TLS for every host except localhost. On providers that
+present a private CA (Supabase among them), supply `DATABASE_CA_CERT` to keep chain
+verification on, or set `DATABASE_SSL=no-verify` to encrypt without verifying.
 
-Размер пула задаётся `DATABASE_POOL_MAX` — по умолчанию 10, на serverless 2, потому
-что там каждый инстанс держит свой пул.
+On Supabase the schema additionally revokes grants from the `anon` and `authenticated`
+roles and enables row level security on its four tables, so password hashes and the
+entry log are not readable through PostgREST with the project's public key. The block
+is skipped where those roles do not exist.
 
-## Деплой на Render
+## Deployment
 
-`render.yaml` в корне — готовый blueprint. Два секрета обязательны, и оба по одной
-и той же причине: файловая система Render стирается при каждом деплое.
+**Node.** `npm start` behind any reverse proxy that terminates TLS. Set
+`SECURE_COOKIES=true`.
 
-| Переменная | Что будет без неё |
-| --- | --- |
-| `DATABASE_URL` | приложение уходит на хранилище в памяти — аккаунты пропадают при каждом рестарте и засыпании сервиса |
-| `SIGNING_KEY` | ключ подписи генерируется заново при каждом деплое, и все выданные пропуска перестают проверяться |
-| `SECURE_COOKIES=true` | cookie сессии уйдёт без флага `Secure` |
+**Render.** `render.yaml` is a ready blueprint. Set `DATABASE_URL` and `SIGNING_KEY` —
+the filesystem is wiped on every deploy, so a generated key would change under the
+passes already in circulation.
 
-Ключ печатает `npm run genkey`. Если он не задан, приложение теперь пишет об этом в
-лог и показывает баннер «Демо-режим» — раньше эта ситуация выглядела как внезапные
-`bad_signature` через день работы.
+**Vercel or other serverless.** `api/index.js` is the entry point; `vercel.json` serves
+`public/` statically and routes `/api/*` to the function. No build step. `SIGNING_KEY`
+is required, since the filesystem is read-only.
 
-Бесплатный план Render засыпает при простое: первый запрос после паузы ждёт около
-минуты. На данные это не влияет — они в Supabase.
+Without a database and a key the app still starts, on the in-memory store with a
+throwaway key, and shows a "demo mode" banner.
 
-## Деплой на Vercel
+## Layout
 
-Репозиторий разворачивается как есть: `public/` раздаётся статикой с CDN, а весь
-`/api/*` уходит в serverless-функцию `api/index.js` (правило в `vercel.json`).
-Отдельная сборка не нужна.
-
-Две переменные окружения в настройках проекта:
-
-```bash
-# 1. база — Vercel Postgres, Neon, Supabase, любой внешний PostgreSQL
-DATABASE_URL=postgres://user:password@host/db?sslmode=require
-
-# 2. ключ подписи: на serverless файловая система только для чтения,
-#    и без общего ключа каждый инстанс подписывал бы пропуска по-своему
-npm run genkey        # выведет строку base64 — её и положить в SIGNING_KEY
-SIGNING_KEY=eyJraWQiOjEsImNyZWF0ZWRB...
+```
+api/index.js          serverless entry point
+render.yaml           Render blueprint
+compose.voidauth.yml  local OIDC provider
+server/
+  index.js            router, static files, security headers
+  config.js           environment, signing key
+  lib/token.js        pass token issue and verify
+  lib/oidc.js         OIDC client: discovery, PKCE, JWKS
+  lib/crypto.js       scrypt, random tokens, constant-time compare
+  lib/email.js        address validation: syntax, reserved domains, MX
+  lib/http.js         json, cookies, static, errors
+  lib/ratelimit.js    request throttling
+  db/schema.sql       tables
+  db/pg.js            PostgreSQL repository
+  db/memory.js        the same interface in memory
+  routes/             auth, oidc, pass, staff
+public/
+  lib/qrcode.js       QR encoder, versions 1-40, levels L/M/Q/H
+  lib/pdf417.js       PDF417 encoder, text/byte modes, EC 0-8
+  lib/render.js       SVG rendering
+  staff/              staff app, including the vendored zxing-wasm decoder
+scripts/              seed, genkey, dbcheck
+test/                 node:test
 ```
 
-Схема таблиц создаётся при первом обращении к API. Демо-аккаунты для развёрнутой
-базы: `DATABASE_URL=... npm run seed` с локальной машины.
+## Tests
 
-Если переменные не заданы, приложение всё равно поднимется — на хранилище в памяти
-и с одноразовым ключом, — но сверху покажет «Демо-режим»: аккаунты и коды живут
-только внутри одного тёплого инстанса и исчезают при холодном старте. Это
-диагностика, а не рабочий режим.
+```bash
+npm test
+```
 
-Камера в приложении сотрудника на Vercel работает: домен отдаётся по HTTPS.
+71 tests, no database required — they run against the in-memory store. Coverage:
+encoders against reference vectors, tokens (signature, expiry, every byte flipped,
+foreign key), the API path from registration through issue, entry, replay and denial,
+roles, rate limits, email validation, the serverless entry point, and single sign-on
+against a stub OIDC provider in `test/helpers/oidc-provider.js`.
 
-## Безопасность: что сделано и что нет
+The QR encoder was validated module-for-module against `python-qrcode` across 168
+combinations of version, error correction level and mask; PDF417 symbols were decoded
+back with `zxing-cpp`.
 
-Сделано:
+## Security
 
-* пароли — scrypt со случайной солью, сравнение через `timingSafeEqual`;
-* сессии — случайный токен в httpOnly cookie, в базе только SHA-256 от него;
-* токены пропуска подписаны Ed25519, живут 30 секунд и одноразовы;
-* приватный ключ никогда не покидает сервер, наружу отдаётся только JWK публичного;
-* ограничение частоты на вход, регистрацию, выпуск токенов и сканирование;
-* CSP без `unsafe-inline`, `X-Frame-Options: DENY`, `nosniff`, статика без выхода за
-  корень каталога;
-* API никогда не кэшируется service worker'ом.
+In place: scrypt password hashing with `timingSafeEqual` comparison; session tokens
+stored only as SHA-256; Ed25519 pass tokens that expire in 30 seconds and work once;
+the private key never leaves the server; rate limits on sign-in, registration, token
+issue and scanning; CSP without `unsafe-inline`, `X-Frame-Options: DENY`, `nosniff`;
+the service worker never caches API responses.
 
-Не сделано (осознанно, для продакшена это следующий шаг):
+Not in place: signing key rotation (the `kid` byte is reserved for it), second factor,
+email confirmation, a shared rate-limit store for multi-instance deployments, and an
+admin UI — suspending a pass is a SQL update. `SECURE_COOKIES=true` and HTTPS are
+required in production.
 
-* нет ротации ключа подписи — поле `kid` в токене под неё уже заложено;
-* нет второго фактора и подтверждения email письмом;
-* rate limit живёт в памяти процесса, при нескольких инстансах нужен общий;
-* `SECURE_COOKIES=true` и HTTPS обязательны в бою — по HTTP cookie уйдёт открыто
-  (на Vercel флаг включается сам);
-* нет административного интерфейса: блокировка пропуска делается SQL-запросом.
+## Third-party code
 
-## Ориентиры
-
-Три проекта из задания. Кода ни одного из них здесь нет — всё написано с нуля, на
-стандартной библиотеке Node. Ниже честно, в каком отношении каждый к этой работе и
-как подключить его по-настоящему, если он нужен именно как компонент.
-
-* [voidauth](https://github.com/voidauth/voidauth) — подключён как провайдер единого
-  входа, см. раздел выше. Его кода здесь нет и быть не может: это отдельный сервис,
-  приложение общается с ним по OIDC. Локальный вход по паролю остаётся доступным,
-  пока `AUTH_MODE` не переведён в `oidc`.
-* [check-if-email-exists](https://github.com/reacherhq/check-if-email-exists) — не
-  использован: это Rust, в Node-процесс не встраивается. `server/lib/email.js`
-  повторяет его слои по смыслу — синтаксис, одноразовые домены, роль-адреса, MX;
-  SMTP-проба сознательно не делается, она ненадёжна и портит репутацию отправителя.
-  Настоящая интеграция — поднять их бинарь или Docker-образ как сервис и ходить в
-  него по HTTP из `checkEmail`.
-* [savvy](https://github.com/sbaerlocher/savvy) — не использован; ближайший аналог
-  по модели «карта в телефоне + сканирование», self-hosted PWA-кошелёк на Go и
-  SvelteKit. Здесь та же идея на vanilla JS и с динамическим кодом вместо
-  статического.
+`public/staff/lib/vendor/zxing/` — zxing-wasm 3.1.3, MIT, used to read barcodes on
+browsers without `BarcodeDetector` (Safari). Everything else is written here on the
+Node standard library, with `pg` as the only runtime dependency.
