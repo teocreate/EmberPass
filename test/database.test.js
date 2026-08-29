@@ -78,11 +78,12 @@ test('a valid connection string yields the target for diagnostics', () => {
     port: '5432',
     database: 'postgres',
     user: 'postgres.ref',
+    passwordLength: 's3cret'.length,
   });
   // Defaults match libpq: port 5432, database postgres.
-  assert.equal(parseDatabaseUrl('postgres://user@host/').port, '5432');
-  assert.equal(parseDatabaseUrl('postgres://user@host/').database, 'postgres');
-  assert.equal(parseDatabaseUrl('postgresql://user@host/app').database, 'app');
+  assert.equal(parseDatabaseUrl('postgres://user:pw@host/').port, '5432');
+  assert.equal(parseDatabaseUrl('postgres://user:pw@host/').database, 'postgres');
+  assert.equal(parseDatabaseUrl('postgresql://user:pw@host/app').database, 'app');
 });
 
 test('connection failures name the likely cause', () => {
