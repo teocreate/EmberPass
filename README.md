@@ -182,6 +182,42 @@ scripts/seed.js  scripts/genkey.js  демо-аккаунты и ключ под
 test/                               node:test — 52 теста
 ```
 
+## Заглянуть в данные
+
+Всё лежит в схеме `public` обычной базы: `users`, `passes`, `sessions`, `pass_scans`.
+В дашборде Supabase — Table Editor, селектор схемы `public`. Или SQL Editor:
+
+```sql
+-- кто зарегистрирован
+SELECT id, email, full_name, role, status, auth_source, created_at, last_login_at
+FROM users ORDER BY id;
+
+-- пропуска с владельцами
+SELECT p.id, p.serial, p.tier, p.status, u.email, u.full_name
+FROM passes p JOIN users u ON u.id = p.user_id ORDER BY p.id;
+
+-- последние проходы
+SELECT s.scanned_at, s.result, s.gate, u.full_name AS holder, st.full_name AS staff
+FROM pass_scans s
+LEFT JOIN users u ON u.id = s.user_id
+LEFT JOIN users st ON st.id = s.staff_id
+ORDER BY s.scanned_at DESC LIMIT 50;
+
+-- выдать доступ сотрудника (когда единый вход не используется)
+UPDATE users SET role = 'staff' WHERE email = 'ivanov@example.com';
+
+-- заблокировать пропуск
+UPDATE passes SET status = 'suspended' WHERE serial = 'PS-00001-ABCD';
+```
+
+Паролей в открытом виде там нет: в `password_hash` лежит scrypt-хеш, а у аккаунтов из
+единого входа это поле пустое. В `sessions` хранится не токен, а его SHA-256.
+
+Table Editor покажет на этих таблицах отметку «RLS enabled» без политик — так и
+задумано. Row level security и отзыв грантов защищают их от чтения через PostgREST
+по публичному ключу проекта; на дашборд это не влияет, потому что гранты отозваны
+только у ролей `anon` и `authenticated`, а Studio ходит в базу с правами владельца.
+
 ## Кодировщики штрихкодов
 
 Написаны с нуля по ISO/IEC 18004 (QR) и ISO/IEC 15438 (PDF417), потому что тянуть
