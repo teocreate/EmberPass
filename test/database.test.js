@@ -75,13 +75,14 @@ test('a valid connection string yields the target for diagnostics', () => {
   const target = parseDatabaseUrl('postgres://postgres.ref:s3cret@aws-0-eu-central-1.pooler.supabase.com:5432/postgres');
   assert.deepEqual(target, {
     host: 'aws-0-eu-central-1.pooler.supabase.com',
-    port: '5432',
+    port: 5432,
     database: 'postgres',
     user: 'postgres.ref',
     passwordLength: 's3cret'.length,
+    options: undefined,
   });
   // Defaults match libpq: port 5432, database postgres.
-  assert.equal(parseDatabaseUrl('postgres://user:pw@host/').port, '5432');
+  assert.equal(parseDatabaseUrl('postgres://user:pw@host/').port, 5432);
   assert.equal(parseDatabaseUrl('postgres://user:pw@host/').database, 'postgres');
   assert.equal(parseDatabaseUrl('postgresql://user:pw@host/app').database, 'app');
 });
@@ -193,4 +194,32 @@ test('a pasted shell command is reported as such, not as a bad URL', () => {
   const pasted = 'DATABASE_URL="postgres://postgres.ref:pw@aws-1.pooler.supabase.com:5432/postgres" npm run dbcheck';
   assert.throws(() => parseDatabaseUrl(pasted), /contains the assignment "DATABASE_URL=\.\.\."/);
   assert.throws(() => parseDatabaseUrl(pasted), /no variable name, no quotes, no trailing command/);
+});
+
+/**
+ * pg parses a connection string with its own rules, so a value that looks clean to
+ * these checks could still reach the server with whitespace inside the database
+ * name. The parsed fields are what gets connected with, and they are normalised.
+ */
+test('stray whitespace never reaches the server', () => {
+  const target = parseDatabaseUrl('postgres://pass:secret@localhost:5432/appdb \n');
+  assert.equal(target.database, 'appdb');
+  assert.equal(target.host, 'localhost');
+  assert.equal(target.port, 5432);
+  assert.equal(target.user, 'pass');
+});
+
+test('the password travels with the target but not into logs', () => {
+  const target = parseDatabaseUrl('postgres://pass:s3cret@localhost:5432/appdb');
+  assert.equal(target.password, 's3cret', 'available to the driver');
+  assert.equal(Object.keys(target).includes('password'), false, 'not enumerable');
+  assert.ok(!JSON.stringify(target).includes('s3cret'), 'cannot leak through serialisation');
+  assert.equal(target.passwordLength, 6);
+});
+
+test('percent-encoded parts are decoded once, for the driver', () => {
+  const target = parseDatabaseUrl('postgres://post%40gres:pa%40ss%23word@host:5432/my%20db');
+  assert.equal(target.user, 'post@gres');
+  assert.equal(target.password, 'pa@ss#word');
+  assert.equal(target.database, 'my db');
 });

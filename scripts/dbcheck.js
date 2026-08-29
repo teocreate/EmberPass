@@ -31,7 +31,16 @@ console.log(`tls      ${describeTls(ssl)}`);
 console.log('');
 
 const { default: pg } = await import('pg');
-const client = new pg.Client({ connectionString: config.databaseUrl, ssl, application_name: 'dynamic-pass-check' });
+const client = new pg.Client({
+  host: target.host,
+  port: target.port,
+  database: target.database,
+  user: target.user,
+  password: target.password,
+  options: target.options,
+  ssl,
+  application_name: 'dynamic-pass-check',
+});
 
 try {
   await client.connect();

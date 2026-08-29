@@ -97,13 +97,22 @@ export function parseDatabaseUrl(databaseUrl) {
     );
   }
 
-  return {
+  const target = {
     host: url.hostname,
-    port: url.port || '5432',
-    database: url.pathname.replace(/^\//, '') || 'postgres',
+    port: Number(url.port || 5432),
+    database: decodeURIComponent(url.pathname.replace(/^\//, '')) || 'postgres',
     user: decodeURIComponent(url.username || ''),
     passwordLength: decodeURIComponent(url.password).length,
+    // Some deployments pass server options (a search_path, say) in the query string.
+    options: url.searchParams.get('options') || undefined,
   };
+  // Kept off the enumerable surface so logging or serialising the target - which the
+  // diagnostics do - cannot spill the password.
+  Object.defineProperty(target, 'password', {
+    value: decodeURIComponent(url.password),
+    enumerable: false,
+  });
+  return target;
 }
 
 /** Turns a driver-level failure into something that names the likely cause. */
@@ -189,8 +198,16 @@ export async function createPostgresStore(databaseUrl) {
       ` (TLS: ${describeTls(ssl)})`,
   );
 
+  // Connection fields are passed explicitly rather than as a connection string: pg
+  // parses a string with its own rules, so a stray space would reach the server
+  // inside the database name while the checks above saw a clean value.
   const pool = new pg.Pool({
-    connectionString: databaseUrl,
+    host: target.host,
+    port: target.port,
+    database: target.database,
+    user: target.user,
+    password: target.password,
+    options: target.options,
     max: config.databasePoolMax,
     ssl,
     application_name: 'dynamic-pass',
