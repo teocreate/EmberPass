@@ -1,27 +1,34 @@
 /**
  * Reading a code from the camera, two ways.
  *
- * BarcodeDetector is native, fast and handles both QR and PDF417 - but Safari does
- * not implement it, so on an iPhone the scanner would simply not work. There the
- * frames are decoded in JavaScript instead, with a vendored jsQR. That path is
- * QR-only: there is no pure-JS PDF417 decoder here, and the holder app can switch
- * its code to QR with one tap.
+ * BarcodeDetector is native and fast, but Safari does not implement it, so on an
+ * iPhone the scanner would simply not work. There the frames go to a vendored
+ * WebAssembly build of ZXing instead, which reads both formats - the same engine
+ * this project's encoders were verified against. It costs a one-time 1.1 MB
+ * download, so it is fetched only where it is needed and cached afterwards.
  */
 
-const VENDOR_URL = '/staff/lib/vendor/jsqr.min.js';
+const VENDOR_URL = '/staff/lib/vendor/zxing/index.js';
+const WASM_URL = '/staff/lib/vendor/zxing/zxing_reader.wasm';
 const MAX_FRAME_WIDTH = 640; // decoding a full-resolution frame is needlessly slow
 
 let vendorPromise = null;
 
-function loadVendorDecoder() {
+/** Loads the WebAssembly decoder once. Its .wasm sits next to the module by design. */
+export function loadVendorDecoder() {
   if (!vendorPromise) {
-    vendorPromise = new Promise((resolve, reject) => {
-      const script = document.createElement('script');
-      script.src = VENDOR_URL;
-      script.onload = () => (window.jsQR ? resolve(window.jsQR) : reject(new Error('декодер загрузился без jsQR')));
-      script.onerror = () => reject(new Error('не удалось загрузить декодер QR'));
-      document.head.appendChild(script);
-    });
+    vendorPromise = import(VENDOR_URL)
+      .then((module) => {
+        // Left alone the module fetches its .wasm from a CDN, which the page's
+        // content security policy forbids - and which would put a gate scanner at the
+        // mercy of someone else's uptime. Point it at our own copy.
+        module.prepareZXingModule({ overrides: { locateFile: () => WASM_URL }, fireImmediately: true });
+        return module;
+      })
+      .catch((error) => {
+        vendorPromise = null; // let a later attempt retry after a failed download
+        throw new Error(`не удалось загрузить декодер: ${error.message}`);
+      });
   }
   return vendorPromise;
 }
@@ -42,13 +49,25 @@ async function nativeScanner() {
 }
 
 async function fallbackScanner() {
-  const jsQR = await loadVendorDecoder();
+  const { readBarcodes } = await loadVendorDecoder();
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', { willReadFrequently: true });
+  const options = {
+    formats: ['QRCode', 'PDF417'],
+    tryHarder: true,
+    tryRotate: true,
+    tryInvert: false, // a code on a phone screen is never inverted
+    maxNumberOfSymbols: 1,
+  };
+
+  const decode = async (frame) => {
+    const results = await readBarcodes(frame, options);
+    return results.filter((result) => result.isValid !== false && result.text).map((result) => result.text);
+  };
 
   return {
-    kind: 'jsqr',
-    formats: ['qr_code'],
+    kind: 'wasm',
+    formats: ['qr_code', 'pdf417'],
     async detect(video) {
       const width = video.videoWidth;
       const height = video.videoHeight;
@@ -58,16 +77,10 @@ async function fallbackScanner() {
       canvas.width = Math.round(width * scale);
       canvas.height = Math.round(height * scale);
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const frame = context.getImageData(0, 0, canvas.width, canvas.height);
-
-      const result = jsQR(frame.data, frame.width, frame.height, { inversionAttempts: 'dontInvert' });
-      return result?.data ? [result.data] : [];
+      return decode(context.getImageData(0, 0, canvas.width, canvas.height));
     },
     /** Exposed so the decode path can be exercised without a camera. */
-    decodeImageData(frame) {
-      const result = jsQR(frame.data, frame.width, frame.height, { inversionAttempts: 'dontInvert' });
-      return result?.data ?? null;
-    },
+    decodeImageData: decode,
   };
 }
 
@@ -85,10 +98,7 @@ export async function createScanner() {
 }
 
 export function describeScanner(scanner) {
-  if (scanner.kind === 'native') {
-    return scanner.formats.includes('pdf417')
-      ? 'Наведите камеру на код пропуска (QR или PDF417)'
-      : 'Наведите камеру на QR-код пропуска';
-  }
-  return 'Наведите камеру на QR-код пропуска (PDF417 в этом браузере не читается)';
+  return scanner.formats.includes('pdf417')
+    ? 'Наведите камеру на код пропуска (QR или PDF417)'
+    : 'Наведите камеру на QR-код пропуска';
 }

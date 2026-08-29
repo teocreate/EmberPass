@@ -1,5 +1,5 @@
 /* Service worker for the staff app: cache the shell, never cache the API. */
-const CACHE = 'staff-shell-v3';
+const CACHE = 'staff-shell-v5';
 const SHELL = [
   '/staff/',
   '/staff/index.html',
@@ -9,6 +9,10 @@ const SHELL = [
   '/lib/api.js',
   '/staff/lib/passtoken.js',
   '/staff/lib/scanner.js',
+  // The module and its shared chunk are small; the 1.1 MB .wasm is left to the
+  // runtime cache, filled by the warm-up fetch right after sign-in.
+  '/staff/lib/vendor/zxing/index.js',
+  '/staff/lib/vendor/share.js',
   '/lib/sso.js',
   '/staff/manifest.webmanifest',
   '/icons/icon-staff.svg',

@@ -1,7 +1,7 @@
 import { api, ApiError } from '/lib/api.js';
 import { setupSso, showSsoError, finishLogout } from '/lib/sso.js';
 import { parseToken, verifyOffline, importVerifyKey, offlineVerificationSupported } from '/staff/lib/passtoken.js';
-import { createScanner, describeScanner } from '/staff/lib/scanner.js';
+import { createScanner, describeScanner, loadVendorDecoder } from '/staff/lib/scanner.js';
 
 const el = (id) => document.getElementById(id);
 const views = { auth: el('view-auth'), scanner: el('view-scanner') };
@@ -377,6 +377,10 @@ async function enterScanner(staff) {
   el('scanner-note').textContent = state.verifyKey
     ? 'Офлайн-проверка подписи доступна'
     : 'Офлайн-проверка подписи недоступна в этом браузере';
+
+  // Where the browser has no BarcodeDetector the decoder is a 1.1 MB download.
+  // Fetching it now, while the gate is being typed in, keeps the first scan quick.
+  if (!('BarcodeDetector' in window)) loadVendorDecoder().catch(() => {});
   await Promise.all([loadScans(), queue.flush()]);
 }
 

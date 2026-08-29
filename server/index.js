@@ -39,7 +39,10 @@ const SECURITY_HEADERS = {
   'x-frame-options': 'DENY',
   'referrer-policy': 'same-origin',
   'content-security-policy':
-    "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; " +
+    // 'wasm-unsafe-eval' is what lets the staff app instantiate its WebAssembly
+    // decoder; it permits WebAssembly compilation only, not eval of JavaScript.
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data:; " +
+    "media-src 'self' blob:; connect-src 'self'; " +
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'",
 };
 
