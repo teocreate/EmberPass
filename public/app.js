@@ -40,7 +40,17 @@ function overlay(text, { retry = false } = {}) {
   el('barcode').classList.add('is-stale');
 }
 
-const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+/** Today shows as a time, anything older gets a short date - a full timestamp
+ * wraps onto two lines on a phone and pulls the row out of alignment. */
+function formatScanTime(value) {
+  const date = new Date(value);
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  return sameDay
+    ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
 
 /* --------------------------------- auth flow -------------------------------- */
 
@@ -237,9 +247,62 @@ document.querySelectorAll('.switch-btn').forEach((button) => {
 
 el('btn-refresh').addEventListener('click', () => refreshToken());
 el('btn-retry').addEventListener('click', () => refreshToken());
-el('btn-bright').addEventListener('click', () => {
-  document.body.classList.toggle('is-bright');
-  el('btn-bright').textContent = document.body.classList.contains('is-bright') ? 'Обычно' : 'Ярче';
+/**
+ * Screen brightness is not something a web page can set - that needs a native app.
+ * What helps a scanner is a big, maximally contrasty code that the screen will not
+ * dim away from under it, so this mode enlarges the code, drops everything else, and
+ * holds a wake lock where the browser supports one.
+ */
+let wakeLock = null;
+
+async function enterCodeFullscreen() {
+  document.body.classList.add('is-code-fullscreen');
+  el('btn-bright').textContent = 'Свернуть';
+
+  const hint = document.createElement('p');
+  hint.className = 'fullscreen-hint';
+  hint.id = 'fullscreen-hint';
+  hint.textContent = 'Нажмите, чтобы выйти';
+  document.body.appendChild(hint);
+  document.body.addEventListener('click', exitOnTap, true);
+
+  // Both are best-effort: iOS Safari refuses fullscreen for anything but video, and
+  // older browsers have no wake lock at all. Neither failure matters here.
+  document.documentElement.requestFullscreen?.().catch(() => {});
+  try {
+    wakeLock = (await navigator.wakeLock?.request('screen')) ?? null;
+  } catch {
+    wakeLock = null;
+  }
+}
+
+function exitCodeFullscreen() {
+  document.body.classList.remove('is-code-fullscreen');
+  el('btn-bright').textContent = 'Во весь экран';
+  el('fullscreen-hint')?.remove();
+  document.body.removeEventListener('click', exitOnTap, true);
+  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  wakeLock?.release?.().catch(() => {});
+  wakeLock = null;
+}
+
+function exitOnTap(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  exitCodeFullscreen();
+}
+
+el('btn-bright').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (document.body.classList.contains('is-code-fullscreen')) exitCodeFullscreen();
+  else enterCodeFullscreen();
+});
+
+// A wake lock is dropped when the page is hidden; take it again on return.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && document.body.classList.contains('is-code-fullscreen') && !wakeLock) {
+    navigator.wakeLock?.request('screen').then((lock) => { wakeLock = lock; }).catch(() => {});
+  }
 });
 
 /* --------------------------------- history ---------------------------------- */
@@ -264,7 +327,7 @@ function renderScans(scans) {
       left.append(result, meta);
       const time = document.createElement('p');
       time.className = 'muted small';
-      time.textContent = dateFormat.format(new Date(scan.scannedAt));
+      time.textContent = formatScanTime(scan.scannedAt);
       item.append(left, time);
       return item;
     }),

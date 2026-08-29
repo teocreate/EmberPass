@@ -1,6 +1,7 @@
 import { api, ApiError } from '/lib/api.js';
 import { setupSso, showSsoError, finishLogout } from '/lib/sso.js';
 import { parseToken, verifyOffline, importVerifyKey, offlineVerificationSupported } from '/staff/lib/passtoken.js';
+import { createScanner, describeScanner } from '/staff/lib/scanner.js';
 
 const el = (id) => document.getElementById(id);
 const views = { auth: el('view-auth'), scanner: el('view-scanner') };
@@ -21,7 +22,17 @@ const state = {
   busy: false,
 };
 
-const dateFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' });
+/** Today shows as a time, anything older gets a short date - a full timestamp
+ * wraps onto two lines on a phone and pulls the row out of alignment. */
+function formatScanTime(value) {
+  const date = new Date(value);
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  return sameDay
+    ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
 
 function showView(name) {
   for (const [key, node] of Object.entries(views)) node.hidden = key !== name;
@@ -166,7 +177,7 @@ function renderVerdict(result) {
   const details = [];
   if (result.holder?.fullName) details.push(result.holder.fullName);
   if (result.previousScan) {
-    details.push(`ранее: ${dateFormat.format(new Date(result.previousScan.scannedAt))}`);
+    details.push(`ранее: ${formatScanTime(result.previousScan.scannedAt)}`);
     if (result.previousScan.gate) details.push(result.previousScan.gate);
   }
   showResult('denied', 'Отказано', label, details.join(' · '));
@@ -200,36 +211,46 @@ async function verifyWhileOffline(token, gate) {
 /* ----------------------------------- camera ------------------------------------- */
 
 async function startCamera() {
-  if (!('BarcodeDetector' in window)) {
-    el('scanner-note').textContent =
-      'Камера-сканер недоступен в этом браузере (нет BarcodeDetector). Используйте ручной ввод кода.';
-    el('manual-card').hidden = false;
-    return;
-  }
+  el('btn-camera').disabled = true;
   try {
-    const supported = await window.BarcodeDetector.getSupportedFormats();
-    const formats = ['qr_code', 'pdf417'].filter((format) => supported.includes(format));
-    state.detector = new window.BarcodeDetector({ formats: formats.length ? formats : ['qr_code'] });
+    // Ask for the camera first: it is the step that needs the user's gesture, and
+    // loading the fallback decoder can take a moment on a slow connection.
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment', width: { ideal: 1280 } },
       audio: false,
     });
+    el('scanner-note').textContent = 'Готовим сканер…';
+    state.detector = await createScanner();
   } catch (error) {
-    el('scanner-note').textContent = `Не удалось включить камеру: ${error.message}`;
+    const denied = error.name === 'NotAllowedError';
+    el('scanner-note').textContent = denied
+      ? 'Доступ к камере запрещён. Разрешите его в настройках сайта и попробуйте снова.'
+      : `Не удалось включить камеру: ${error.message}. Используйте ручной ввод кода.`;
+    el('manual-card').hidden = false;
+    stopCamera();
     return;
+  } finally {
+    el('btn-camera').disabled = false;
   }
 
   const video = el('video');
   video.srcObject = state.stream;
-  await video.play();
+  try {
+    await video.play();
+  } catch (error) {
+    el('scanner-note').textContent = `Видео не запустилось: ${error.message}`;
+    stopCamera();
+    return;
+  }
   el('camera-card').hidden = false;
-  el('scanner-note').textContent = 'Наведите камеру на код пропуска';
+  el('scanner-note').textContent = describeScanner(state.detector);
   state.scanning = true;
   scanLoop();
 }
 
 function stopCamera() {
   state.scanning = false;
+  state.detector = null;
   if (state.stream) state.stream.getTracks().forEach((track) => track.stop());
   state.stream = null;
   el('video').srcObject = null;
@@ -240,17 +261,17 @@ async function scanLoop() {
   const video = el('video');
   while (state.scanning) {
     try {
-      const codes = await state.detector.detect(video);
-      for (const code of codes) {
-        if (parseToken(code.rawValue)) {
-          await handleToken(code.rawValue.trim());
+      for (const value of await state.detector.detect(video)) {
+        if (parseToken(value)) {
+          await handleToken(value.trim());
           break;
         }
       }
     } catch {
       // A transient detect() failure (video not ready yet) is not worth reporting.
     }
-    await new Promise((resolve) => setTimeout(resolve, 180));
+    // Decoding in JavaScript is heavier than the native path, so it gets more room.
+    await new Promise((resolve) => setTimeout(resolve, state.detector.kind === 'native' ? 180 : 320));
   }
 }
 
@@ -280,7 +301,7 @@ async function loadScans() {
         left.append(title, meta);
         const time = document.createElement('p');
         time.className = 'muted small';
-        time.textContent = dateFormat.format(new Date(scan.scannedAt));
+        time.textContent = formatScanTime(scan.scannedAt);
         item.append(left, time);
         return item;
       }),
