@@ -83,7 +83,7 @@
         <div class="pass-head">
           <div>
             <p class="muted small">Пропуск</p>
-            <p class="serial" id="pass-serial">—</p>
+            <p class="serial mono" id="pass-serial">—</p>
           </div>
           <span class="badge" id="pass-status">—</span>
         </div>
@@ -96,27 +96,23 @@
           </div>
         </div>
 
-        <div class="pass-meta">
-          <div class="countdown">
-            <svg viewBox="0 0 36 36" class="ring" aria-hidden="true">
-              <circle class="ring-bg" cx="18" cy="18" r="16" />
-              <circle class="ring-fg" id="ring-progress" cx="18" cy="18" r="16" />
-            </svg>
-            <span id="countdown-value">—</span>
+        <div class="time">
+          <div class="time-track" role="progressbar" aria-labelledby="token-status" aria-valuemin="0" aria-valuemax="30" id="time-track">
+            <div class="time-fill" id="time-fill"></div>
           </div>
-          <div class="pass-meta-text">
-            <p id="token-status">Код обновляется автоматически</p>
-            <p class="muted small" id="token-hint">Покажите код сотруднику на входе</p>
-          </div>
+          <span class="time-value"><span id="countdown-value">—</span><span class="time-unit">с</span></span>
         </div>
 
-        <div class="row">
-          <div class="switch" role="group" aria-label="Тип кода">
+        <p class="time-note" id="token-status">Код обновляется автоматически</p>
+        <p class="muted small time-note" id="token-hint">Покажите код сотруднику на входе</p>
+
+        <div class="row pass-actions">
+          <div class="switch" role="group" aria-label="Тип кода" id="format-switch" hidden>
             <button class="switch-btn is-active" data-format="qr" type="button">QR</button>
             <button class="switch-btn" data-format="pdf417" type="button">PDF417</button>
           </div>
           <button class="btn btn-ghost" id="btn-refresh" type="button">Обновить</button>
-          <button class="btn btn-ghost" id="btn-bright" type="button">Во весь экран</button>
+          <button class="btn btn-primary" id="btn-bright" type="button">Во весь экран</button>
         </div>
       </section>
 

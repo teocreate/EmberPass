@@ -36,9 +36,9 @@ export function loadVendorDecoder() {
   return vendorPromise;
 }
 
-async function nativeScanner() {
+async function nativeScanner(wanted) {
   const supported = await window.BarcodeDetector.getSupportedFormats();
-  const formats = ['qr_code', 'pdf417'].filter((format) => supported.includes(format));
+  const formats = wanted.filter((format) => supported.includes(format));
   if (!formats.length) return null;
   const detector = new window.BarcodeDetector({ formats });
   return {
@@ -51,12 +51,12 @@ async function nativeScanner() {
   };
 }
 
-async function fallbackScanner() {
+async function fallbackScanner(wanted) {
   const { readBarcodes } = await loadVendorDecoder();
   const canvas = document.createElement('canvas');
   const context = canvas.getContext('2d', { willReadFrequently: true });
   const options = {
-    formats: ['QRCode', 'PDF417'],
+    formats: wanted.map((format) => (format === 'pdf417' ? 'PDF417' : 'QRCode')),
     tryHarder: true,
     tryRotate: true,
     tryInvert: false, // a code on a phone screen is never inverted
@@ -70,7 +70,7 @@ async function fallbackScanner() {
 
   return {
     kind: 'wasm',
-    formats: ['qr_code', 'pdf417'],
+    formats: wanted,
     async detect(video) {
       const width = video.videoWidth;
       const height = video.videoHeight;
@@ -87,21 +87,26 @@ async function fallbackScanner() {
   };
 }
 
-/** Picks the best available way to read codes, or throws if there is none. */
-export async function createScanner() {
+/**
+ * Picks the best available way to read codes. `formats` comes from the server, so a
+ * deployment that only issues QR does not have the scanner hunting for PDF417 in
+ * every frame - and never mistakes some other barcode in shot for a pass.
+ */
+export async function createScanner(formats = ['qr']) {
+  const wanted = formats.map((format) => (format === 'pdf417' ? 'pdf417' : 'qr_code'));
   if ('BarcodeDetector' in window) {
     try {
-      const native = await nativeScanner();
+      const native = await nativeScanner(wanted);
       if (native) return native;
     } catch {
       // A present but unusable BarcodeDetector still leaves the fallback.
     }
   }
-  return fallbackScanner();
+  return fallbackScanner(wanted);
 }
 
 export function describeScanner(scanner) {
   return scanner.formats.includes('pdf417')
-    ? 'Наведите камеру на код пропуска (QR или PDF417)'
+    ? 'Наведите камеру на код пропуска: QR или PDF417'
     : 'Наведите камеру на QR-код пропуска';
 }

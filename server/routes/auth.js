@@ -171,6 +171,7 @@ export async function handleMe(ctx, req, res) {
   const server = {
     storage: ctx.store.kind,
     warnings: ctx.warnings ?? [],
+    formats: config.pdf417Enabled ? ['qr', 'pdf417'] : ['qr'],
     auth: {
       local: config.localAuthEnabled,
       registration: config.localAuthEnabled && config.registrationOpen,

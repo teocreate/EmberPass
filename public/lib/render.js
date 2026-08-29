@@ -1,5 +1,4 @@
 import { encodeQR, qrToSvg } from './qrcode.js';
-import { encodePDF417, pdf417ToSvg } from './pdf417.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -23,10 +22,19 @@ function svgElement(width, height, path, label) {
   return svg;
 }
 
+// The PDF417 encoder is only fetched where the format is switched on, so a
+// deployment without turnstile hardware never downloads it.
+let pdf417Module = null;
+export async function loadFormat(format) {
+  if (format !== 'pdf417' || pdf417Module) return;
+  pdf417Module = await import('./pdf417.js');
+}
+
 /** Draws a token into `container` as a QR or PDF417 symbol. */
 export function renderBarcode(container, token, format) {
   container.replaceChildren();
-  if (format === 'pdf417') {
+  if (format === 'pdf417' && pdf417Module) {
+    const { encodePDF417, pdf417ToSvg } = pdf417Module;
     // Few columns on purpose. A wide, short symbol looks tidier but packs the modules
     // too tightly to survive a phone camera: measured against blur and a few degrees
     // of tilt, 10 columns failed where 4 held - the modules are simply wider, and the

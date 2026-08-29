@@ -81,6 +81,10 @@ export const config = {
   rejectDisposableEmail: bool('REJECT_DISPOSABLE_EMAIL', true),
   clockSkew: int('CLOCK_SKEW', 5), // seconds of tolerance when verifying tokens
   registrationOpen: bool('REGISTRATION_OPEN', true),
+  // PDF417 exists for laser scanners on turnstiles. Off by default: read off a phone
+  // screen it is markedly less forgiving than QR, so it only earns its place where
+  // that hardware is actually installed. The encoder and its tests stay in the build.
+  pdf417Enabled: bool('PASS_PDF417', false),
 
   oidc: {
     // Discovery document of the provider. For VoidAuth the issuer is APP_URL + /oidc,

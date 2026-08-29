@@ -1,5 +1,5 @@
 /* Service worker for the staff app: cache the shell, never cache the API. */
-const CACHE = 'staff-shell-v5';
+const CACHE = 'staff-shell-v6';
 const SHELL = [
   '/staff/',
   '/staff/index.html',

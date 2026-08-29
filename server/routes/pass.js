@@ -16,6 +16,7 @@ export async function handleGetPass(ctx, req, res) {
     recentScans: scans.map(publicScan),
     tokenTtl: config.passTokenTtl,
     refreshEvery: config.passTokenRefresh,
+    formats: config.pdf417Enabled ? ['qr', 'pdf417'] : ['qr'],
   });
 }
 
