@@ -40,8 +40,24 @@
   --pending-solid: #8a5600;
   --verdict-text: #ffffff;
 
-  --radius: 18px;
-  --radius-sm: 12px;
+  /*
+   * Rounding, after Apple's shapes. Two rules do the work.
+   *
+   * Corners are continuous, not circular arcs: the curvature eases into the
+   * straight edge instead of meeting it at a step. `corner-shape` draws that where
+   * the browser has it and falls back to the plain arc where it does not, so the
+   * shape degrades rather than breaking.
+   *
+   * Nested shapes are concentric - the inner radius is the outer one minus the
+   * padding between them, so both curves share a centre. It is applied where the
+   * nesting is tight enough to see: the segmented controls and their thumbs, the
+   * overlay that fills the code window, the ring drawn on the refresh button. Where
+   * a card holds something at arm's length the two curves are unrelated and the
+   * inner shape takes the scale value instead.
+   */
+  --r-card: 22px;      /* the outer surface: a card, a sheet */
+  --r-inset: 14px;     /* something held inside one: a window, a field, a frame */
+  --r-capsule: 999px;  /* controls: buttons, segmented controls, badges */
   --shadow: 0 1px 2px rgba(15, 19, 25, 0.06), 0 8px 24px rgba(15, 19, 25, 0.07);
   --shadow-press: 0 1px 2px rgba(15, 19, 25, 0.08);
 
@@ -119,7 +135,6 @@ a { color: var(--signal); text-underline-offset: 2px; }
 :where(a, button, input, [tabindex]):focus-visible {
   outline: 2px solid var(--signal);
   outline-offset: 2px;
-  border-radius: 6px;
 }
 
 /* ---------- structure ---------- */
@@ -129,7 +144,7 @@ a { color: var(--signal); text-underline-offset: 2px; }
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: var(--r-card);
   box-shadow: var(--shadow);
   padding: 1.25rem;
   margin-bottom: 1rem;
@@ -166,7 +181,7 @@ a { color: var(--signal); text-underline-offset: 2px; }
   font: inherit;
   min-height: var(--tap);
   padding: 0.625rem 1rem;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-capsule);
   border: 1px solid var(--line-strong);
   background: var(--surface);
   color: var(--text);
@@ -204,7 +219,7 @@ a { color: var(--signal); text-underline-offset: 2px; }
   color: var(--text);
   background: var(--surface-2);
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-inset);
   padding: 0.625rem 0.75rem;
 }
 .hint { min-height: 1.1em; font-size: 0.8125rem; }
@@ -215,16 +230,16 @@ a { color: var(--signal); text-underline-offset: 2px; }
   background: color-mix(in srgb, var(--denied) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--denied) 40%, transparent);
   color: var(--denied);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-inset);
   padding: 0.625rem 0.75rem;
   font-size: 0.875rem;
   margin: 0;
 }
 
-.tabs { display: flex; gap: 0.25rem; background: var(--surface-2); border-radius: var(--radius-sm); padding: 0.25rem; }
+.tabs { display: flex; gap: 0.25rem; background: var(--surface-2); border-radius: var(--r-capsule); padding: 0.25rem; }
 .tab {
   flex: 1; border: 0; background: transparent; color: var(--muted); font: inherit;
-  min-height: 2.5rem; border-radius: 9px; cursor: pointer;
+  min-height: 2.5rem; border-radius: var(--r-capsule); cursor: pointer;
   transition: transform 0.12s var(--ease), background-color 0.16s var(--ease), color 0.16s var(--ease);
 }
 .tab:active { transform: scale(0.97); }
@@ -254,7 +269,7 @@ a { color: var(--signal); text-underline-offset: 2px; }
 }
 
 .badge {
-  border-radius: 999px; padding: 0.25rem 0.625rem; font-size: 0.75rem; font-weight: 600;
+  border-radius: var(--r-capsule); padding: 0.25rem 0.625rem; font-size: 0.75rem; font-weight: 600;
   letter-spacing: 0.01em;
   background: color-mix(in srgb, var(--granted) 14%, transparent); color: var(--granted);
 }
@@ -270,7 +285,7 @@ a { color: var(--signal); text-underline-offset: 2px; }
   transition: transform 0.12s var(--ease);
   background: #ffffff;
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-inset);
   padding: 0.875rem;
   display: grid;
   place-items: center;
@@ -283,7 +298,7 @@ a { color: var(--signal); text-underline-offset: 2px; }
 .barcode-overlay {
   position: absolute; inset: 0; display: grid; place-content: center; gap: 0.625rem; justify-items: center;
   background: rgba(255, 255, 255, 0.88);
-  border-radius: var(--radius-sm);
+  border-radius: inherit;
   color: #0f1319; text-align: center; padding: 1rem;
 }
 
@@ -314,11 +329,11 @@ a { color: var(--signal); text-underline-offset: 2px; }
   stroke-dashoffset: 0;
 }
 
-.switch { display: flex; background: var(--surface-2); border-radius: var(--radius-sm); padding: 0.1875rem; }
+.switch { display: flex; background: var(--surface-2); border-radius: var(--r-capsule); padding: 0.1875rem; }
 .switch-btn {
   flex: 1;
   border: 0; background: transparent; color: var(--muted); font: inherit;
-  min-height: 2.375rem; padding: 0 0.875rem; border-radius: 9px; cursor: pointer;
+  min-height: 2.375rem; padding: 0 0.875rem; border-radius: var(--r-capsule); cursor: pointer;
   transition: transform 0.12s var(--ease), background-color 0.16s var(--ease), color 0.16s var(--ease);
 }
 .switch-btn:active { transform: scale(0.96); }
@@ -391,6 +406,22 @@ body.is-code-fullscreen .barcode svg path { fill: #000000; }
 .fullscreen-hint {
   position: fixed; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
   text-align: center; font-size: 0.8125rem; color: #6b7280; z-index: 10;
+}
+
+/*
+ * The continuous corner. A capsule is left alone - its corner is already a full
+ * semicircle, and smoothing one only makes it look squarer.
+ */
+@supports (corner-shape: squircle) {
+  .card,
+  .barcode-wrap,
+  .barcode-overlay,
+  .field input,
+  .form-error,
+  .video-wrap,
+  .reticle {
+    corner-shape: squircle;
+  }
 }
 
 /* ---------- accessibility preferences ---------- */

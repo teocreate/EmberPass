@@ -1,5 +1,11 @@
-/* Service worker for the staff app: cache the shell, never cache the API. */
-const CACHE = 'staff-shell-v6';
+/*
+ * Service worker for the staff app.
+ *
+ * Network first, cache as the fallback - see the holder app's worker for why. The
+ * vendored decoder is the exception: it is 1.1 MB and changes only when it is
+ * re-vendored, so it comes from the cache and is never re-downloaded.
+ */
+const CACHE = 'staff-shell-v7';
 const SHELL = [
   '/staff/',
   '/staff/index.html',
@@ -18,8 +24,18 @@ const SHELL = [
   '/icons/icon-staff.svg',
 ];
 
+const CACHE_FIRST = /\/lib\/vendor\//;
+const NETWORK_TIMEOUT = 2500;
+
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      // 'reload' keeps the snapshot out of the browser's own HTTP cache, which would
+      // otherwise let a stale copy into a fresh install.
+      .then((cache) => cache.addAll(SHELL.map((url) => new Request(url, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -31,24 +47,37 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+async function fromNetwork(request, timeout) {
+  const controller = new AbortController();
+  const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
+  try {
+    const response = await fetch(request, { signal: controller.signal });
+    if (response.ok) {
+      const copy = response.clone();
+      caches.open(CACHE).then((cache) => cache.put(request, copy));
+    }
+    return response;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  // Pass tokens and verification results must always come from the server.
+  // A verification result must never be answered from a cache.
   if (url.pathname.startsWith('/api/')) return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
-        })
-        .catch(() => cached || caches.match('/staff/index.html'));
-      return cached || network;
-    }),
+    (async () => {
+      const cached = await caches.match(event.request);
+      if (cached && CACHE_FIRST.test(url.pathname)) return cached;
+      try {
+        // With nothing cached there is nothing to fall back to, so wait it out.
+        return await fromNetwork(event.request, cached ? NETWORK_TIMEOUT : 0);
+      } catch {
+        return cached || (await caches.match('/staff/index.html')) || Response.error();
+      }
+    })(),
   );
 });
