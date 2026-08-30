@@ -510,6 +510,23 @@ function showConfigWarnings(server) {
   banner.textContent = messages.length ? `Демо-режим: ${messages.join('; ')}` : '';
 }
 
+/*
+ * A worker that takes over mid-session leaves the page running the markup and code
+ * it loaded before the deploy while the new worker serves everything else, which is
+ * how a deploy ends up half applied on a phone. Reloading once on the handover keeps
+ * the page whole; the flag guards against the loop that would otherwise be.
+ */
+let reloading = false;
+function registerWorker(url) {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloading) return;
+    reloading = true;
+    location.reload();
+  });
+  navigator.serviceWorker.register(url).catch(() => {});
+}
+
 (async function boot() {
   el('offline-banner').hidden = navigator.onLine;
   try {
@@ -525,7 +542,5 @@ function showConfigWarnings(server) {
   } catch {
     showView('auth');
   }
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-  }
+  registerWorker('/sw.js');
 })();

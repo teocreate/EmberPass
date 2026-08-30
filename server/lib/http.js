@@ -124,7 +124,11 @@ export async function serveStatic(req, res, root, urlPath) {
   if (!info?.isFile()) return false;
 
   const type = MIME_TYPES[extname(filePath).toLowerCase()] || 'application/octet-stream';
-  const immutable = /\/lib\/|\.(png|svg|ico)$/.test(filePath);
+  // Only what genuinely does not change between deploys: vendored code, which is
+  // replaced by re-vendoring, and icons. Our own modules under /lib/ change with
+  // every release, and an hour-old copy of one against a fresh app.js is exactly the
+  // half-applied deploy the service workers are written to avoid.
+  const immutable = /\/lib\/vendor\/|\.(png|svg|ico)$/.test(filePath);
   res.writeHead(200, {
     'content-type': type,
     'content-length': info.size,
