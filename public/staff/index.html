@@ -71,7 +71,12 @@
           <div class="reticle" aria-hidden="true"></div>
         </div>
         <div class="row camera-controls">
-          <button class="btn btn-ghost" id="btn-torch" type="button" aria-pressed="false" hidden>Фонарик</button>
+          <button class="btn btn-ghost btn-round" id="btn-torch" type="button" aria-pressed="false"
+                  aria-label="Фонарик" title="Фонарик" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M13.5 2 4 14h6l-.5 8L20 10h-6z" />
+            </svg>
+          </button>
           <button class="btn btn-ghost" id="btn-stop-camera" type="button">Остановить камеру</button>
         </div>
       </section>

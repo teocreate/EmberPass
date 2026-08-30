@@ -261,9 +261,13 @@ a { color: var(--signal); text-underline-offset: 2px; }
 .badge.is-warn { background: color-mix(in srgb, var(--pending) 16%, transparent); color: var(--pending); }
 .badge.is-danger { background: color-mix(in srgb, var(--denied) 12%, transparent); color: var(--denied); }
 
-/* The window itself: always white, whatever the theme - it is the scanner's target. */
+/* The window itself: always white, whatever the theme - it is the scanner's target.
+   It is also the control that opens the full-screen view: the code is what the
+   holder reaches for, so a separate button for it was one element too many. */
 .barcode-wrap {
   position: relative;
+  cursor: pointer;
+  transition: transform 0.12s var(--ease);
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -272,6 +276,7 @@ a { color: var(--signal); text-underline-offset: 2px; }
   place-items: center;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.9);
 }
+.barcode-wrap:active { transform: scale(0.99); }
 .barcode svg { display: block; width: 100%; height: auto; max-width: 20rem; }
 .barcode.is-stale { opacity: 0.32; }
 
@@ -283,32 +288,35 @@ a { color: var(--signal); text-underline-offset: 2px; }
 }
 
 /*
- * The remaining life of the code, drawn as a rule the exact width of the window it
- * belongs to. Time is a property of this code, so it is attached to it rather than
- * parked in a separate widget.
+ * The remaining life of the code is the refresh button's own outline. The ring is
+ * whole while the code is fresh and erases clockwise from the top-left corner,
+ * reaching nothing at the instant the code is replaced - it is driven by the same
+ * deadline that triggers the replacement, so the two cannot drift apart.
+ *
+ * The ring is drawn in the button's real pixels rather than a stretched viewBox: a
+ * non-square box scaled to fit would thicken the stroke on the long edges and make
+ * the head speed up and slow down as it went round.
  */
-.time {
-  display: flex; align-items: center; gap: 0.75rem;
+.pass-actions { display: grid; gap: 0.625rem; }
+.refresh { position: relative; display: grid; }
+.refresh .btn { width: 100%; }
+.ring {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  overflow: visible;
 }
-.time-track {
-  flex: 1; height: 4px; border-radius: 999px; background: var(--surface-2); overflow: hidden;
+.ring-path {
+  fill: none;
+  stroke: var(--signal);
+  stroke-width: 2;
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 0;
 }
-.time-fill {
-  height: 100%; border-radius: inherit; background: var(--signal);
-  transform-origin: left center;
-  transition: transform 0.25s linear, background-color 0.3s var(--ease);
-}
-.time-fill.is-low { background: var(--pending); }
-.time-value {
-  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
-  font-size: 0.9375rem; font-weight: 600; color: var(--muted);
-  display: inline-flex; align-items: baseline; gap: 0.15em;
-}
-.time-value > span:first-child { min-width: 2ch; text-align: right; }
-.time-unit { font-size: 0.8125rem; opacity: 0.75; }
 
 .switch { display: flex; background: var(--surface-2); border-radius: var(--radius-sm); padding: 0.1875rem; }
 .switch-btn {
+  flex: 1;
   border: 0; background: transparent; color: var(--muted); font: inherit;
   min-height: 2.375rem; padding: 0 0.875rem; border-radius: 9px; cursor: pointer;
   transition: transform 0.12s var(--ease), background-color 0.16s var(--ease), color 0.16s var(--ease);
@@ -393,9 +401,10 @@ body.is-code-fullscreen .barcode svg path { fill: #000000; }
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  /* The countdown still needs to move: it is information, not decoration. */
-  .time-fill { transition-duration: 0.25s !important; }
-  .btn:active, .tab:active, .switch-btn:active { transform: none; }
+  /* The ring is the countdown, not decoration, so it keeps moving. It is driven
+     frame by frame from the clock rather than by a transition, so nothing here
+     stops it. */
+  .btn:active, .tab:active, .switch-btn:active, .barcode-wrap:active { transform: none; }
 }
 
 @media (prefers-reduced-transparency: reduce) {
