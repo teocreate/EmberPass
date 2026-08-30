@@ -166,13 +166,20 @@ function layoutRing() {
   ring.w = w;
   ring.h = h;
   const stroke = 2;
-  const radius = parseFloat(getComputedStyle(button).borderTopLeftRadius) || 12;
+  // The stroke sits on the path, so the path is inset by half of it and its radius
+  // is the button's minus the same half - that is what keeps the ring concentric
+  // with the edge it is drawn on. A capsule reports a radius far larger than the
+  // button, and SVG would clamp rx and ry separately and hand back an oval corner,
+  // so the cap is applied here instead.
+  const declared = parseFloat(getComputedStyle(button).borderTopLeftRadius) || 12;
+  const limit = Math.min(w - stroke, h - stroke) / 2;
+  const radius = Math.max(0, Math.min(declared - stroke / 2, limit));
   ring.box.setAttribute('viewBox', `0 0 ${w} ${h}`);
   ring.path.setAttribute('x', String(stroke / 2));
   ring.path.setAttribute('y', String(stroke / 2));
   ring.path.setAttribute('width', String(w - stroke));
   ring.path.setAttribute('height', String(h - stroke));
-  ring.path.setAttribute('rx', String(Math.max(0, radius - stroke / 2)));
+  ring.path.setAttribute('rx', String(radius));
 }
 
 function setStatus(text) {
