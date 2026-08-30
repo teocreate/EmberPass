@@ -12,7 +12,7 @@ const state = {
   formats: ['qr'],
   token: null, // { token, issuedAt, expiresAt, ttl, receivedAt }
   refreshTimer: null,
-  tickTimer: null,
+  frame: null,
   refreshing: false,
 };
 
@@ -144,19 +144,54 @@ function drawToken() {
   const info = renderBarcode(el('barcode'), state.token.token, state.format);
   el('token-hint').textContent =
     state.format === 'qr'
-      ? `QR ${info.version} · покажите код сотруднику`
-      : `PDF417 ${info.version} · для сканеров на турникете`;
+      ? `QR ${info.version} · нажмите на код, чтобы увеличить`
+      : `PDF417 ${info.version} · нажмите на код, чтобы увеличить`;
+}
+
+/*
+ * The countdown ring. Its geometry is written in the button's own pixels every time
+ * the button changes size, so the stroke keeps an even width and the erasing head an
+ * even speed all the way round.
+ */
+const ring = { box: null, path: null, w: 0, h: 0 };
+
+function layoutRing() {
+  if (!ring.box) return;
+  const button = el('btn-refresh');
+  const rect = button.getBoundingClientRect();
+  const w = Math.round(rect.width);
+  const h = Math.round(rect.height);
+  // Zero while the view is hidden; keep the last good geometry until it has a size.
+  if (!w || !h || (w === ring.w && h === ring.h)) return;
+  ring.w = w;
+  ring.h = h;
+  const stroke = 2;
+  const radius = parseFloat(getComputedStyle(button).borderTopLeftRadius) || 12;
+  ring.box.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  ring.path.setAttribute('x', String(stroke / 2));
+  ring.path.setAttribute('y', String(stroke / 2));
+  ring.path.setAttribute('width', String(w - stroke));
+  ring.path.setAttribute('height', String(h - stroke));
+  ring.path.setAttribute('rx', String(Math.max(0, radius - stroke / 2)));
+}
+
+function setStatus(text) {
+  const node = el('token-status');
+  if (node.textContent !== text) node.textContent = text;
 }
 
 /**
  * The code on screen is replaced well before its token expires, so counting down to
  * the expiry would show the code changing with a third of the ring still to go. The
- * ring counts to the replacement instead - zero is the moment the code changes.
+ * ring counts to the replacement instead - an empty ring is the moment the code
+ * changes.
  *
  * If a refresh is late (no network, say), the ring switches to the token's real
  * lifetime: the code stays valid and scannable until then, and that is what the
  * holder needs to know at that point.
  */
+let lastSecond = -1;
+
 function tick() {
   if (!state.token) return;
   const now = Date.now() / 1000;
@@ -164,23 +199,26 @@ function tick() {
   const untilExpiry = state.token.expiresAt - now + state.token.skew;
   const late = untilRefresh <= 0;
 
-  const secondsLeft = Math.max(0, Math.ceil(late ? untilExpiry : untilRefresh));
   const total = late ? state.token.ttl : state.token.cycle;
-  const ratio = Math.max(0, Math.min(1, secondsLeft / total));
+  const left = Math.max(0, late ? untilExpiry : untilRefresh);
+  const secondsLeft = Math.ceil(left);
 
-  const fill = el('time-fill');
-  fill.style.transform = `scaleX(${ratio})`;
-  fill.classList.toggle('is-low', late || ratio < 0.34);
-  el('countdown-value').textContent = String(secondsLeft);
-  const track = el('time-track');
-  track.setAttribute('aria-valuemax', String(total));
-  track.setAttribute('aria-valuenow', String(secondsLeft));
-  track.setAttribute('aria-valuetext', `${secondsLeft} секунд до обновления кода`);
+  // 0 leaves the ring whole, 1 erases it completely. The rect path starts at the
+  // top-left corner and runs clockwise, so this is where the head goes.
+  const gone = total > 0 ? Math.min(1, Math.max(0, 1 - left / total)) : 1;
+  ring.path.style.strokeDashoffset = String(-gone);
+
+  // Announcing sixty times a second would flood a screen reader; the value only
+  // ever changes once.
+  if (secondsLeft !== lastSecond) {
+    lastSecond = secondsLeft;
+    ring.box.setAttribute('aria-valuemax', String(Math.round(total)));
+    ring.box.setAttribute('aria-valuenow', String(secondsLeft));
+    ring.box.setAttribute('aria-valuetext', `${secondsLeft} с до обновления кода`);
+  }
 
   if (late && !state.refreshing) {
-    el('token-status').textContent = secondsLeft
-      ? `Обновление задерживается — код годен ещё ${secondsLeft} с`
-      : 'Код устарел';
+    setStatus(secondsLeft ? `Обновление задерживается — код годен ещё ${secondsLeft} с` : 'Код устарел');
     if (!secondsLeft) overlay('Код устарел', { retry: true });
   }
 }
@@ -197,18 +235,22 @@ async function refreshToken({ silent = false } = {}) {
     // refreshDueAt runs on the browser's clock, the same one the timer below uses, so
     // the ring and the actual replacement cannot drift apart.
     const cycle = Math.max(2, Math.min(issued.refreshEvery, issued.ttl));
-    state.token = { ...issued, skew, cycle, refreshDueAt: Date.now() / 1000 + cycle };
+    // One deadline drives both the ring and the replacement, taken at one instant,
+    // so the ring cannot empty early or late.
+    const dueAt = Date.now() + cycle * 1000;
+    state.token = { ...issued, skew, cycle, refreshDueAt: dueAt / 1000 };
     drawToken();
     overlay('');
-    el('token-status').textContent = 'Код действителен';
+    setStatus('Код действителен');
+    layoutRing();
     tick();
-    scheduleRefresh(issued.refreshEvery);
+    scheduleRefreshAt(dueAt);
   } catch (error) {
     const message =
       error instanceof ApiError && error.code === 'network_error'
         ? 'Нет сети — код не обновлён'
         : error.message || 'Не удалось обновить код';
-    el('token-status').textContent = message;
+    setStatus(message);
     overlay(message, { retry: true });
     // A refresh that did not happen means the ring should show the real lifetime left.
     if (state.token) state.token.refreshDueAt = Date.now() / 1000;
@@ -216,30 +258,45 @@ async function refreshToken({ silent = false } = {}) {
       stopTokenLoop();
       showView('auth');
     } else {
-      scheduleRefresh(5);
+      scheduleRefreshAt(Date.now() + 5000);
     }
   } finally {
     state.refreshing = false;
   }
 }
 
-function scheduleRefresh(seconds) {
+const ringResize = new ResizeObserver(() => layoutRing());
+
+function scheduleRefreshAt(dueAt) {
   clearTimeout(state.refreshTimer);
-  state.refreshTimer = setTimeout(() => refreshToken({ silent: true }), Math.max(2, seconds) * 1000);
+  state.refreshTimer = setTimeout(() => refreshToken({ silent: true }), Math.max(0, dueAt - Date.now()));
+}
+
+/* The ring is redrawn every frame from the clock rather than stepped on a timer:
+ * anything coarser shows as a stutter on a stroke this long. */
+function frameLoop() {
+  state.frame = requestAnimationFrame(frameLoop);
+  tick();
 }
 
 function startTokenLoop() {
   stopTokenLoop();
-  state.tickTimer = setInterval(tick, 250);
+  ring.box = el('ring');
+  ring.path = el('ring-path');
+  layoutRing();
+  ringResize.observe(el('btn-refresh'));
+  state.frame = requestAnimationFrame(frameLoop);
   refreshToken();
 }
 
 function stopTokenLoop() {
   clearTimeout(state.refreshTimer);
-  clearInterval(state.tickTimer);
+  cancelAnimationFrame(state.frame);
+  ringResize.disconnect();
   state.refreshTimer = null;
-  state.tickTimer = null;
+  state.frame = null;
 }
+
 
 document.querySelectorAll('.switch-btn').forEach((button) => {
   button.addEventListener('click', async () => {
@@ -263,7 +320,6 @@ let wakeLock = null;
 
 async function enterCodeFullscreen() {
   document.body.classList.add('is-code-fullscreen');
-  el('btn-bright').textContent = 'Свернуть';
 
   const hint = document.createElement('p');
   hint.className = 'fullscreen-hint';
@@ -284,7 +340,6 @@ async function enterCodeFullscreen() {
 
 function exitCodeFullscreen() {
   document.body.classList.remove('is-code-fullscreen');
-  el('btn-bright').textContent = 'Во весь экран';
   el('fullscreen-hint')?.remove();
   document.body.removeEventListener('click', exitOnTap, true);
   if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
@@ -298,10 +353,17 @@ function exitOnTap(event) {
   exitCodeFullscreen();
 }
 
-el('btn-bright').addEventListener('click', (event) => {
-  event.stopPropagation();
-  if (document.body.classList.contains('is-code-fullscreen')) exitCodeFullscreen();
-  else enterCodeFullscreen();
+/* The code is the control. Tapping it opens the full-screen view; the capture
+ * listener installed above closes it again on the next tap anywhere. */
+el('barcode-wrap').addEventListener('click', (event) => {
+  // The retry button lives inside the window and means something else.
+  if (event.target.closest('#btn-retry')) return;
+  enterCodeFullscreen();
+});
+el('barcode-wrap').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  enterCodeFullscreen();
 });
 
 // A wake lock is dropped when the page is hidden; take it again on return.
@@ -377,7 +439,7 @@ async function enterCabinet(user, pass) {
       startTokenLoop();
     } else {
       overlay('Пропуск неактивен — обратитесь в администрацию');
-      el('token-status').textContent = 'Код не выдаётся';
+      setStatus('Код не выдаётся');
     }
   } catch (error) {
     overlay(error.message || 'Не удалось загрузить пропуск', { retry: true });

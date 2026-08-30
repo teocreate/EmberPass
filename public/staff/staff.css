@@ -77,7 +77,19 @@
    gap rather than the full block one. */
 .camera-controls { margin-top: var(--stack-tight); }
 
-/* A lit lamp is a control that is on, so it takes the interactive colour. */
+/*
+ * The lamp is a mode, not a sentence: a round icon button, one tap target wide, that
+ * fills with the interactive colour while it is lit.
+ */
+.btn-round {
+  width: var(--tap); height: var(--tap);
+  flex: none;
+  padding: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+.btn-round svg { width: 20px; height: 20px; fill: currentColor; }
 .btn.is-on { background: var(--signal); border-color: transparent; color: var(--signal-contrast); }
 .btn.is-on:active { background: var(--signal-press); }
 
